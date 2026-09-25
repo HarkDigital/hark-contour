@@ -1,6 +1,10 @@
-// THEME: fonts (@fontsource packages). Neutral defaults: Inter + JetBrains Mono.
-import '@fontsource-variable/inter'
-import '@fontsource-variable/jetbrains-mono'
+// Contour type: Newsreader (display serif; italic for water names and the
+// accent word), Overpass (Highway-Gothic-derived map lettering + UI) and
+// Overpass Mono (coordinates, labels).
+import '@fontsource-variable/newsreader/opsz.css'
+import '@fontsource-variable/newsreader/opsz-italic.css'
+import '@fontsource-variable/overpass'
+import '@fontsource-variable/overpass-mono'
 import './styles/base.css'
 import './ui/ui.css'
 

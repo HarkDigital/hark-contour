@@ -381,10 +381,13 @@ export const PROCESS = [
 /** THEME: give every concept its own microcopy (don't reuse another concept's). */
 export const MICROCOPY = {
   signalEyebrow: 'Hark Digital Design',
-  scrollHint: 'Scroll to begin',
+  scrollHint: 'Scroll to survey',
   audio: 'Sound',
   audioOn: 'On',
   audioOff: 'Off',
+  motion: 'Motion',
+  /** decorative map marginalia (not claims): the studio's home coordinates */
+  coordinates: '39°57′N · 75°10′W',
 }
 
 export const SECURITY = {

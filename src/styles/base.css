@@ -17,43 +17,47 @@
    ------------------------------------------------------------------ */
 
 :root {
-  /* THEME tokens */
-  --bg: #0d0f12;
-  --ink: #0d0f12;
-  --paper: #f4f2ee;
-  --paper-2: #f4f2ee;
-  /* THEME: the concept's accent. A neutral placeholder — not the old signal green, which
-     is not a Hark brand color (the brand is the monochrome mark). */
-  --signal: #d8dde6;
-  --signal-deep: #5b6270;
+  /* Contour tokens: chart paper, warm ink, survey vermilion, contour brown, water ink */
+  --bg: #f2ecdf;
+  --ink: #2b2521;
+  --paper: #f2ecdf;
+  --paper-2: #e9e1cf;
+  /* survey vermilion: routes, markers, CTAs (large marks) */
+  --signal: #d2462a;
+  /* vermilion for text and fills under text (≥ 4.5:1 with paper) */
+  --signal-deep: #a8341a;
+  --contour: #8c5f3d;
+  --water: #2e5d75;
 
-  --fg: var(--paper);
-  --fg-muted: rgba(244, 242, 238, 0.78);
-  --fg-faint: rgba(244, 242, 238, 0.64);
-  --line: rgba(244, 242, 238, 0.16);
-  --line-strong: rgba(244, 242, 238, 0.38);
-  --panel: rgba(13, 15, 18, 0.72);
+  --fg: var(--ink);
+  --fg-muted: rgba(43, 37, 33, 0.82);
+  --fg-faint: rgba(43, 37, 33, 0.7);
+  --line: rgba(43, 37, 33, 0.16);
+  --line-strong: rgba(43, 37, 33, 0.42);
+  --panel: rgba(246, 241, 230, 0.95);
+  --panel-edge: rgba(43, 37, 33, 0.55);
 
-  --font-display: 'Inter Variable', system-ui, sans-serif;
-  --font-sans: 'Inter Variable', system-ui, sans-serif;
-  --font-mono: 'JetBrains Mono Variable', ui-monospace, monospace;
+  --font-display: 'Newsreader Variable', Georgia, 'Times New Roman', serif;
+  --font-sans: 'Overpass Variable', system-ui, sans-serif;
+  --font-mono: 'Overpass Mono Variable', ui-monospace, monospace;
 
   /* STRUCTURE: the persistent chrome owns these bands (+ notch insets) */
   --gutter: max(clamp(16px, 3.4vw, 48px), env(safe-area-inset-left, 0px), env(safe-area-inset-right, 0px));
   --safe-top: calc(clamp(80px, 10.5vh, 112px) + env(safe-area-inset-top, 0px));
   --safe-bottom: calc(clamp(82px, 10.5vh, 110px) + env(safe-area-inset-bottom, 0px));
 
-  color-scheme: dark;
+  color-scheme: light;
 }
 
-/* example tone flip for light scenes: add .is-light to a stage */
-.is-light {
-  --fg: var(--ink);
-  --fg-muted: rgba(13, 15, 18, 0.74);
-  --fg-faint: rgba(13, 15, 18, 0.64);
-  --line: rgba(13, 15, 18, 0.14);
-  --line-strong: rgba(13, 15, 18, 0.32);
-  --panel: rgba(244, 242, 238, 0.82);
+/* tone flip for dark moments (the storm): add .is-dark to a stage or panel */
+.is-dark {
+  --fg: var(--paper);
+  --fg-muted: rgba(242, 236, 223, 0.86);
+  --fg-faint: rgba(242, 236, 223, 0.72);
+  --line: rgba(242, 236, 223, 0.18);
+  --line-strong: rgba(242, 236, 223, 0.46);
+  --panel: rgba(34, 29, 38, 0.92);
+  --panel-edge: rgba(242, 236, 223, 0.5);
 }
 
 *,
@@ -102,8 +106,8 @@ html.lenis body {
 }
 
 ::selection {
-  background: var(--signal);
-  color: var(--bg);
+  background: var(--signal-deep);
+  color: var(--paper);
 }
 
 a {
@@ -198,19 +202,26 @@ a {
 }
 
 :focus-visible {
+  /* two-tone ring: ink with a paper halo, so it holds 3:1 on tints, water and ink alike */
   outline: 3px solid var(--ink);
   outline-offset: 3px;
+  box-shadow: 0 0 0 7px rgba(242, 236, 223, 0.9);
 }
 
 .is-dark :focus-visible {
-  outline-color: var(--paper-2);
+  outline-color: var(--paper);
+  box-shadow: 0 0 0 7px rgba(43, 37, 33, 0.85);
 }
 
-/* ---------------- HUD vocabulary (THEME) ---------------- */
+/* ---------------- HUD vocabulary (THEME: Contour) ----------------
+   Chart marginalia: letter-spaced map lettering for eyebrows and labels,
+   Newsreader for titles (italic vermilion accent word, like a water name),
+   legend boxes with a double neatline for panels, a scale bar for rules. */
 
 .hud-label {
   font-family: var(--font-mono);
-  font-size: 11px;
+  font-weight: 500;
+  font-size: 11.5px;
   letter-spacing: 0.08em;
   text-transform: uppercase;
   color: var(--fg-muted);
@@ -221,56 +232,65 @@ a {
   display: inline-flex;
   align-items: center;
   gap: 10px;
-  font-family: var(--font-mono);
-  font-size: 11.5px;
-  letter-spacing: 0.12em;
+  font-family: var(--font-sans);
+  font-weight: 700;
+  font-size: 12px;
+  letter-spacing: 0.2em;
   text-transform: uppercase;
-  color: var(--fg);
+  color: var(--signal-deep);
   margin: 0;
 }
+/* a survey benchmark triangle */
 .hud-eyebrow::before {
   content: '';
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
+  flex: none;
+  width: 10px;
+  height: 9px;
   background: var(--signal);
+  -webkit-clip-path: polygon(50% 0, 100% 100%, 0 100%);
+  clip-path: polygon(50% 0, 100% 100%, 0 100%);
+}
+.is-dark .hud-eyebrow {
+  color: #f0a38f;
 }
 
 .hud-title {
   font-family: var(--font-display);
-  font-weight: 700;
-  letter-spacing: -0.035em;
-  line-height: 0.92;
-  font-size: clamp(3rem, 8vw, 8rem);
+  font-weight: 400;
+  letter-spacing: -0.028em;
+  line-height: 0.94;
+  font-size: clamp(3rem, 7.6vw, 7.8rem);
   margin: 0;
   color: var(--fg);
   text-wrap: balance;
 }
 .hud-h2 {
   font-family: var(--font-display);
-  font-weight: 700;
-  letter-spacing: -0.03em;
-  line-height: 0.98;
-  font-size: clamp(2rem, 4.4vw, 4.2rem);
+  font-weight: 420;
+  letter-spacing: -0.022em;
+  line-height: 1;
+  font-size: clamp(2.1rem, 4.4vw, 4.4rem);
   margin: 0;
   color: var(--fg);
   text-wrap: balance;
 }
-/* <em> = the accent word */
+/* <em> = the accent word: italic survey vermilion, like a lettered water name */
 .hud-title em,
 .hud-h2 em {
-  font-style: normal;
-  color: var(--signal);
-}
-.is-light .hud-title em,
-.is-light .hud-h2 em {
+  font-style: italic;
+  font-weight: 380;
   color: var(--signal-deep);
+  letter-spacing: -0.01em;
+}
+.is-dark .hud-title em,
+.is-dark .hud-h2 em {
+  color: #f0a38f;
 }
 
 .hud-body {
   font-family: var(--font-sans);
-  font-size: clamp(15px, 1.15vw, 17px);
-  line-height: 1.55;
+  font-size: clamp(15px, 1.1vw, 17px);
+  line-height: 1.6;
   color: var(--fg-muted);
   max-width: 42ch;
   margin: 0;
@@ -278,10 +298,11 @@ a {
 
 .hud-quote {
   font-family: var(--font-display);
-  font-weight: 500;
-  font-size: clamp(1.4rem, 2.6vw, 2.4rem);
-  line-height: 1.18;
-  letter-spacing: -0.015em;
+  font-style: italic;
+  font-weight: 400;
+  font-size: clamp(1.35rem, 2.3vw, 2.2rem);
+  line-height: 1.24;
+  letter-spacing: -0.01em;
   color: var(--fg);
   margin: 0;
   text-wrap: pretty;
@@ -296,63 +317,93 @@ a {
   list-style: none;
 }
 .hud-tag {
-  font-family: var(--font-mono);
-  font-size: 10.5px;
-  letter-spacing: 0.06em;
+  font-family: var(--font-sans);
+  font-weight: 600;
+  font-size: 11px;
+  letter-spacing: 0.1em;
   text-transform: uppercase;
   color: var(--fg);
-  padding: 4px 9px;
+  padding: 4px 8px 3px;
   border: 1px solid var(--line-strong);
-  border-radius: 999px;
+  border-radius: 2px;
 }
 
 .hud-btn {
   display: inline-flex;
   align-items: center;
   gap: 10px;
-  font-family: var(--font-mono);
-  font-size: 12px;
-  font-weight: 600;
-  letter-spacing: 0.08em;
+  font-family: var(--font-sans);
+  font-size: 12.5px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
   text-transform: uppercase;
   text-decoration: none;
-  color: var(--bg);
-  background: var(--signal);
-  padding: 13px 20px;
+  color: var(--paper);
+  background: var(--signal-deep);
+  padding: 14px 20px 13px;
   border: 0;
-  border-radius: 999px;
+  border-radius: 2px;
+  box-shadow: 0 1px 0 rgba(43, 37, 33, 0.25);
   cursor: pointer;
-  transition: transform 0.2s ease;
+  transition:
+    background-color 0.2s ease,
+    transform 0.2s ease;
 }
-.hud-btn:hover,
-.hud-btn:focus-visible {
-  transform: translateY(-2px);
+.hud-btn:hover {
+  background: var(--ink);
+  transform: translateY(-1px);
 }
 .hud-btn--ghost {
   background: transparent;
   color: var(--fg);
-  box-shadow: inset 0 0 0 1px var(--line-strong);
+  box-shadow: inset 0 0 0 1.5px var(--fg);
+}
+.hud-btn--ghost:hover {
+  background: var(--ink);
+  color: var(--paper);
+}
+.is-dark .hud-btn--ghost:hover {
+  background: var(--paper);
+  color: var(--ink);
 }
 
+/* a legend box: paper, a double neatline, lifted off the chart */
 .hud-panel {
   position: relative;
-  padding: 20px 22px;
+  padding: 22px 24px;
   background: var(--panel);
-  border: 1px solid var(--line);
-  border-radius: 14px;
-  -webkit-backdrop-filter: blur(12px);
-  backdrop-filter: blur(12px);
+  border: 1px solid var(--panel-edge);
+  border-radius: 2px;
+  box-shadow:
+    inset 0 0 0 3px var(--panel),
+    inset 0 0 0 4px var(--line-strong),
+    0 14px 34px -16px rgba(70, 45, 20, 0.35);
+}
+.hud-panel--quiet {
+  box-shadow: none;
+  border-color: var(--line-strong);
 }
 
+/* a scale bar */
 .hud-rule {
-  height: 1px;
-  border: 0;
-  background: var(--line);
+  height: 6px;
+  width: 100%;
+  max-width: 240px;
+  border: 1px solid var(--fg);
+  background: repeating-linear-gradient(90deg, var(--fg) 0 20%, transparent 20% 40%);
   margin: 14px 0;
 }
 
 .hud-mono {
   font-family: var(--font-mono);
+}
+
+/* a coordinate / sheet readout (decorative marginalia) */
+.hud-coord {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  color: var(--fg-faint);
 }
 
 /* ---------------- 3D-anchored callouts (src/core/dom.ts) ---------------- */
@@ -373,29 +424,33 @@ a {
 .callout-svg path {
   fill: none;
   stroke: var(--fg);
-  stroke-opacity: 0.6;
+  stroke-opacity: 0.75;
   stroke-width: 1;
 }
 .callout-dot {
   position: absolute;
-  left: -4px;
-  top: -4px;
-  width: 8px;
-  height: 8px;
+  left: -5px;
+  top: -5px;
+  width: 10px;
+  height: 10px;
   border-radius: 50%;
-  background: var(--signal);
+  border: 2px solid var(--signal);
+  background: var(--paper);
 }
 .callout-label {
   position: absolute;
   left: 0;
   top: 0;
   white-space: nowrap;
-  font-family: var(--font-mono);
+  font-family: var(--font-sans);
+  font-weight: 700;
   font-size: 11px;
-  letter-spacing: 0.06em;
+  letter-spacing: 0.14em;
   text-transform: uppercase;
   color: var(--fg);
   line-height: 1.5;
+  padding: 2px 6px 1px;
+  background: rgba(242, 236, 223, 0.92);
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -412,8 +467,9 @@ a {
 }
 
 /* ---------------- word reveal (src/core/dom.ts rise/setRise) ----------------
-   THEME: restyle the motion (Orbit decoded, Resonance rose, Press stamped,
-   Town popped, Arcade blinked in). Neutral: a short rise + fade. */
+   Contour: each word is DRAWN ON, left to right, like a pen tracing map
+   lettering (a clip sweep with a short stagger). Settles in ~0.7 s; the text
+   is always exact; reduced motion shows it at once. */
 .rise .rise-w {
   display: inline-block;
   vertical-align: top;
@@ -426,19 +482,22 @@ a {
 }
 .rise .rise-w > span {
   display: inline-block;
-  opacity: 0;
-  transform: translate3d(0, 0.4em, 0);
+  -webkit-clip-path: inset(-0.3em 100% -0.35em -0.15em);
+  clip-path: inset(-0.3em 100% -0.35em -0.15em);
+  opacity: 0.2;
   transition:
-    transform 0.55s cubic-bezier(0.2, 0.8, 0.2, 1),
-    opacity 0.35s ease;
-  transition-delay: calc(var(--i, 0) * 35ms);
+    -webkit-clip-path 0.5s cubic-bezier(0.35, 0.6, 0.2, 1),
+    clip-path 0.5s cubic-bezier(0.35, 0.6, 0.2, 1),
+    opacity 0.3s ease;
+  transition-delay: calc(var(--i, 0) * 45ms);
 }
 .rise.is-in .rise-w > span {
+  -webkit-clip-path: inset(-0.3em -0.3em -0.35em -0.15em);
+  clip-path: inset(-0.3em -0.3em -0.35em -0.15em);
   opacity: 1;
-  transform: none;
 }
 .rise:not(.is-in) .rise-w > span {
-  transition-duration: 0.25s, 0.2s;
+  transition-duration: 0.22s, 0.22s, 0.18s;
   transition-delay: 0s;
 }
 
@@ -475,11 +534,11 @@ a {
   letter-spacing: 0.08em;
   text-transform: uppercase;
   text-decoration: none;
-  color: var(--ink);
-  background: var(--signal);
+  color: var(--paper);
+  background: var(--ink);
   padding: 12px 18px;
-  border-radius: 999px;
-  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.3);
+  border-radius: 2px;
+  box-shadow: 0 6px 20px rgba(43, 37, 33, 0.3);
   outline: 2px solid var(--signal);
   outline-offset: 3px;
 }
@@ -513,10 +572,10 @@ a {
   font: 500 12px/1 var(--font-mono);
   letter-spacing: 0.08em;
   text-transform: uppercase;
-  color: var(--ink);
-  background: var(--signal);
+  color: var(--paper);
+  background: var(--ink);
   padding: 10px 16px;
-  border: 2px solid var(--ink);
+  border: 2px solid var(--signal);
 }
 .sr-note {
   position: absolute;
@@ -537,11 +596,11 @@ a {
   letter-spacing: 0.08em;
   text-transform: uppercase;
   text-decoration: none;
-  color: var(--ink);
-  background: var(--signal);
+  color: var(--paper);
+  background: var(--ink);
   padding: 10px 16px;
-  border: 2px solid var(--ink);
-  border-radius: 4px;
+  border: 2px solid var(--signal);
+  border-radius: 2px;
   transition: transform 0.2s ease;
 }
 .skip-link:focus {
@@ -554,7 +613,11 @@ a {
 .lowfx .hud-panel {
   -webkit-backdrop-filter: none;
   backdrop-filter: none;
-  background: rgba(13, 15, 18, 0.9);
+  background: rgba(246, 241, 230, 0.97);
+}
+.lowfx .is-dark .hud-panel,
+.lowfx .hud-panel.is-dark {
+  background: rgba(34, 29, 38, 0.96);
 }
 
 /* the visitor's Motion switch (engine.motion = false) mirrors reduced motion */

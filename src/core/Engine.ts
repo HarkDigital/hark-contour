@@ -103,6 +103,8 @@ export class Engine {
   private cutHold = 0
   private cutCss = -1
   private cutPeakAt = -1e9
+  /** frames the view has held perfectly still with Motion off (see tick) */
+  private quiet = 0
   /**
    * Ambient motion on/off. When off, frame.time holds still once the intro
    * reveal has had time to play (3 s after 'hark:reveal').
@@ -138,22 +140,22 @@ export class Engine {
     //   cinematic ones, NoToneMapping suits stylised post passes (palette
     //   snaps, ink densities). Shadows cost real GPU time — enable only if
     //   the look needs them (then keep the shadow frustum tight).
-    this.renderer.setClearColor(0x0d0f12, 1)
+    // Contour: printed chart colours are authored exactly (no tone curve);
+    // the clear colour is the chart paper.
+    this.renderer.setClearColor(0xf2ecdf, 1)
     this.renderer.outputColorSpace = THREE.SRGBColorSpace
-    this.renderer.toneMapping = THREE.NeutralToneMapping
+    this.renderer.toneMapping = THREE.NoToneMapping
     this.renderer.shadowMap.enabled = false
     this.renderer.shadowMap.type = THREE.PCFShadowMap
     this.renderer.toneMappingExposure = 1
     this.renderer.info.autoReset = false
     this.renderer.debug.checkShaderErrors = !import.meta.env.PROD
 
-    this.world = new World(this.scene, this.mobile)
+    this.world = new World(this.scene, this.mobile, this.renderer)
     this.scene.add(this.world.object)
     this.assets = new Assets(this.renderer)
-    // MSAA only where it pays: 1x desktop screens. Retina is already supersampled,
-    // and multisampled half-float ping-pong targets cost ~1 GB of VRAM there.
-    const msaa = !this.mobile && (window.devicePixelRatio || 1) < 1.5
-    this.post = new Post(this.renderer, this.scene, this.camera, !msaa)
+    // MSAA on the scene render only (Post decides by the frame's DPR)
+    this.post = new Post(this.renderer, this.scene, this.camera)
 
     this.frame = {
       time: 0,
@@ -178,6 +180,8 @@ export class Engine {
 
     this.resize(true)
     window.addEventListener('resize', () => this.resize())
+    // any input wakes a still frame at once (see the Motion-off gate in tick)
+    for (const type of ['keydown', 'focusin', 'click', 'pointerover']) window.addEventListener(type, () => this.wake(), { passive: true })
     const toNdc = (e: PointerEvent) =>
       this.frame.pointerRaw.set((e.clientX / this.cw) * 2 - 1, -(e.clientY / this.ch) * 2 + 1)
     window.addEventListener('pointermove', toNdc)
@@ -369,7 +373,7 @@ export class Engine {
   private async prewarm() {
     // lit programs key on the environment map: give the scene its real one first
     ;(this.world as unknown as { warmEnv?: () => void }).warmEnv?.()
-    const target = this.post.composer.renderTarget1
+    const target = this.post.scenePass.target
     // Compile each chapter with ONLY its own group (and lights) visible:
     // three keys programs on the visible light set, so compiling everything at
     // once builds variants no chapter ever uses and the real ones link later,
@@ -475,6 +479,7 @@ export class Engine {
     this.cw = w
     this.ch = h
     this.dpr = dpr
+    this.quiet = 0
     this.renderer.setPixelRatio(dpr)
     this.renderer.setSize(w, h, false)
     this.post.setSize(w, h, dpr)
@@ -562,8 +567,13 @@ export class Engine {
    * 30 fps Low Power Mode cap is not mistaken for a slow GPU), and creep back
    * up once there's headroom.
    */
+  /** Redraw on the next frame even if the view is holding still (chapters/HUD may call it). */
+  wake() {
+    this.quiet = 0
+  }
+
   private adaptResolution(raw: number, dt: number) {
-    if (document.hidden || this.frame.time < 4 || this.jump) return
+    if (document.hidden || this.frame.time < 4 || this.jump || this.quiet > 90) return
     this.cadence.push(raw)
     if (this.cadence.length > 120) this.cadence.shift()
     if (this.cadence.length >= 60 && ++this.cadenceTick % 20 === 0) {
@@ -693,9 +703,19 @@ export class Engine {
 
     // glitch ramps up approaching any internal cut and back down after it
     let d = Infinity
-    for (let i = 1; i < this.slots.length; i++) d = Math.min(d, Math.abs(scrollVh - this.slots[i].start))
+    let side = 1
+    for (let i = 1; i < this.slots.length; i++) {
+      const dd = scrollVh - this.slots[i].start
+      if (Math.abs(dd) < d) {
+        d = Math.abs(dd)
+        side = dd < 0 ? -1 : 1
+      }
+    }
     const tr = clamp(1 - d / CUT_WINDOW)
-    const cut = Math.max(tr * tr * (3 - 2 * tr), fx)
+    const scrollCut = tr * tr * (3 - 2 * tr)
+    const cut = Math.max(scrollCut, fx)
+    // which side of the cut we're on (-1 approaching the boundary, +1 after)
+    this.post.cutSide = fx > scrollCut && this.jump ? (this.jump.swapped ? 1 : -1) : side
     // cut budget (WCAG 2.3.1): while boundaries come fast (a quick scroll or
     // a cut peaked < 0.5 s ago) hold the transition so they merge into one
     // continuous sheet instead of a train of full-frame dips
@@ -712,13 +732,29 @@ export class Engine {
     }
     const calm = this.reducedMotion || !this.motion
     if (calm) {
-      // no ripples or flashes: a quiet, shallow dip instead
+      // no contour sweep, no zooms seen through it: a quiet fade through paper covers the swap
       this.post.transition = 0
-      this.post.fade = cutOut * 0.35
+      this.post.fade = cutOut * 0.9
     } else {
       this.post.transition = cutOut
-      this.post.fade = 0
+      // a fling through several chapters: the held sweep alone still lets busy
+      // scenes strobe through it, so wash the frame out too (eases off with the hold)
+      const fling = clamp((Math.abs(f.velocity) - 2.5) / 1.5)
+      this.post.fade = 0.8 * this.cutHold * fling * fling * (3 - 2 * fling)
     }
+
+    // Motion off and nothing moving: the frame can't change, so don't redraw it
+    // 60 times a second. A 2 fps heartbeat still picks up late textures and
+    // settles damped params; scroll, pointer, jumps, cuts and resizes re-arm it.
+    const settled =
+      !!f.still &&
+      !this.jump &&
+      cutOut === 0 &&
+      index === this.state.index &&
+      Math.abs(vel) < 1e-4 &&
+      Math.abs(f.pointer.x - f.pointerRaw.x) + Math.abs(f.pointer.y - f.pointerRaw.y) < 1e-3
+    this.quiet = settled ? this.quiet + 1 : 0
+    if (this.quiet > 90 && this.quiet % 30 !== 0) return
 
     if (index !== this.state.index || !slot.chapter.group.visible) {
       const prev = this.slots[this.state.index]

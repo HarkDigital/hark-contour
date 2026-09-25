@@ -91,26 +91,65 @@ function simplify(pts: THREE.Vector2[], eps: number): THREE.Vector2[] {
   return pts.filter((_, i) => keep[i])
 }
 
-const SIMPLIFY_EPS = 0.0012
+// a tight tolerance (≈0.6 px at 1000 px tall): the mark is drawn large as a coastline / benchmark
+const SIMPLIFY_EPS = 0.0006
+
+/**
+ * Drop outline cusps the source path leaves at each curl hole's outermost
+ * point: near-reversing vertices (turn > 150°) and sharp turns on
+ * micro-edges (turn > 60° with an edge shorter than `micro`). A deep bevel
+ * run over them folds into notches and spikes in close-up.
+ */
+function despike(pts: THREE.Vector2[], micro: number) {
+  const p = pts.slice()
+  if (p.length > 3 && p[0].distanceTo(p[p.length - 1]) < 1e-7) p.pop()
+  const a = new THREE.Vector2()
+  const b = new THREE.Vector2()
+  const REVERSE = Math.cos((150 * Math.PI) / 180)
+  const SHARP = Math.cos(Math.PI / 3)
+  for (let pass = 0, changed = true; changed && pass < 16; pass++) {
+    changed = false
+    for (let i = 0; i < p.length && p.length > 8; i++) {
+      const prev = p[(i - 1 + p.length) % p.length]
+      const next = p[(i + 1) % p.length]
+      a.subVectors(p[i], prev)
+      b.subVectors(next, p[i])
+      const la = a.length()
+      const lb = b.length()
+      const cos = la < 1e-7 || lb < 1e-7 ? -1 : a.dot(b) / (la * lb)
+      if (cos < REVERSE || (cos < SHARP && Math.min(la, lb) < micro)) {
+        p.splice(i, 1)
+        i--
+        changed = true
+      }
+    }
+  }
+  return p
+}
 
 /** Normalize shape groups in-place: center on (cx, cy), scale, flip y. */
-function normalize(groups: THREE.Shape[][], cx: number, cy: number, scale: number) {
+function normalize(groups: THREE.Shape[][], cx: number, cy: number, scale: number, micro = 0) {
+  const clean = (pts: THREE.Vector2[]) => (micro > 0 ? despike(pts, micro) : pts)
   const tx = (v: THREE.Vector2) => v.set((v.x - cx) * scale, -(v.y - cy) * scale)
   const out: THREE.Shape[][] = []
   for (const g of groups) {
     const gOut: THREE.Shape[] = []
     for (const s of g) {
       // rebuild from discretized points so the flip doesn't break winding logic
-      const pts = simplify(
-        s.getPoints(48).map(p => tx(p.clone())),
-        SIMPLIFY_EPS,
+      const pts = clean(
+        simplify(
+          s.getPoints(48).map(p => tx(p.clone())),
+          SIMPLIFY_EPS,
+        ),
       )
       if (THREE.ShapeUtils.isClockWise(pts)) pts.reverse()
       const shape = new THREE.Shape(pts)
       for (const h of s.holes) {
-        const hp = simplify(
-          h.getPoints(48).map(p => tx(p.clone())),
-          SIMPLIFY_EPS,
+        const hp = clean(
+          simplify(
+            h.getPoints(48).map(p => tx(p.clone())),
+            SIMPLIFY_EPS,
+          ),
         )
         if (!THREE.ShapeUtils.isClockWise(hp)) hp.reverse()
         shape.holes.push(new THREE.Path(hp))
@@ -126,7 +165,8 @@ function ensureMark() {
   if (_mark) return
   // viewBox 0 0 1889.6 1889.9 — drop the three hairline slivers Illustrator left behind
   const groups = parse(MARK_SVG, 40)
-  const norm = normalize(groups, 1889.6 / 2, 1889.9 / 2, 1 / 1889.9)
+  // (the mark only: micro-edges under 0.4% of its height at sharp turns are cusps)
+  const norm = normalize(groups, 1889.6 / 2, 1889.9 / 2, 1 / 1889.9, 0.004)
   // order in the file: loop (top-right), loop (bottom-left), diamond
   _parts = { loopA: norm[0] ?? [], loopB: norm[1] ?? [], diamond: norm[2] ?? [] }
   _mark = norm.flat()

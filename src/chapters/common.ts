@@ -2,6 +2,10 @@ import * as THREE from 'three'
 import { logoGeometry, logoParts } from '../logo/logo'
 import { clamp } from '../core/math'
 import type { CameraPose, Frame } from '../core/types'
+import { World } from '../world/World'
+import { chartMaterial } from '../kit/chart'
+import { terrainGeometry, heightRange } from '../kit/terrain'
+import { simplex2, fbm } from '../kit/noise'
 
 /*
  * Shared helpers for the starter's placeholder chapters. Each chapter is a
@@ -30,11 +34,15 @@ export function placeholderMark(color = '#c9ced6'): THREE.Group {
   return g
 }
 
-/** A faint reference grid floor so placeholder scenes read as space. */
-export function placeholderFloor(size = 30, y = -1.4): THREE.GridHelper {
-  const grid = new THREE.GridHelper(size, size, 0x3a4150, 0x262b34)
-  grid.position.y = y
-  return grid
+/** A small printed chart (rolling land + water) so placeholder scenes read as Contour. */
+export function placeholderFloor(size = 30, y = -1.4): THREE.Mesh {
+  const n = simplex2(size | 0)
+  const height = (x: number, z: number) => fbm(n, x * 0.07, z * 0.07, 5) * 2.4 + 0.3
+  const geo = terrainGeometry({ width: size, depth: size, seg: 160, height })
+  const { hMin, hMax } = heightRange(geo)
+  const mesh = new THREE.Mesh(geo, chartMaterial(World.current!, { terrain: geo, hMin, hMax, interval: 0.15 }))
+  mesh.position.y = y
+  return mesh
 }
 
 /**
