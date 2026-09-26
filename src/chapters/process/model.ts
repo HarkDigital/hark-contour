@@ -1,6 +1,6 @@
 import * as THREE from 'three'
 import type { World } from '../../world/World'
-import type { TerrainData } from '../../kit/terrain'
+import { HEIGHT_GLSL, type TerrainData } from '../../kit/terrain'
 import { C } from '../../kit/chart'
 import type { DrawTime } from './field'
 
@@ -90,11 +90,13 @@ export function draftMaterial(world: World, td: TerrainData, dt: DrawTime, inter
   }
   const material = new THREE.ShaderMaterial({
     uniforms,
+    defines: td.manual ? { H_MANUAL: '' } : {},
     transparent: true,
     depthWrite: false,
     toneMapped: false,
     vertexShader: WORLD_VERT,
     fragmentShader: /* glsl */ `
+      ${HEIGHT_GLSL}
       uniform sampler2D uHTex, uDTex;
       uniform vec2 uHOrigin, uHStep, uHSize, uDOrigin, uDSize;
       uniform float uDStep, uPerUnit, uDpr, uInterval, uIndex, uPencil, uInk, uLines, uTicks, uTickSize, uOldCoast, uShadow, uShadowLevel, uFeather;
@@ -104,7 +106,7 @@ export function draftMaterial(world: World, td: TerrainData, dt: DrawTime, inter
       ${ISO}
       void main() {
         vec2 tuv = ((vW.xz - uHOrigin) / uHStep + 0.5) / uHSize;
-        float h = texture2D(uHTex, tuv).r;
+        float h = chartHeight(uHTex, tuv, uHSize);
         vec2 duv = ((vW.xz - uDOrigin) / uDStep + 0.5) / uDSize;
         float T = texture2D(uDTex, duv).r;
         float px = max(uDpr, 0.5);
@@ -124,8 +126,8 @@ export function draftMaterial(world: World, td: TerrainData, dt: DrawTime, inter
         vec2 ex = vec2(1.0 / uHSize.x, 0.0);
         vec2 ez = vec2(0.0, 1.0 / uHSize.y);
         vec2 g = vec2(
-          (texture2D(uHTex, tuv + ex).r - texture2D(uHTex, tuv - ex).r) / (2.0 * uHStep.x),
-          (texture2D(uHTex, tuv + ez).r - texture2D(uHTex, tuv - ez).r) / (2.0 * uHStep.y)
+          (chartHeight(uHTex, tuv + ex, uHSize) - chartHeight(uHTex, tuv - ex, uHSize)) / (2.0 * uHStep.x),
+          (chartHeight(uHTex, tuv + ez, uHSize) - chartHeight(uHTex, tuv - ez, uHSize)) / (2.0 * uHStep.y)
         );
 
         float lvl = floor(fC + 0.5);
@@ -218,6 +220,7 @@ export function boardMaterial(world: World, td: TerrainData, level: number, next
   }
   const material = new THREE.ShaderMaterial({
     uniforms,
+    defines: td.manual ? { H_MANUAL: '' } : {},
     transparent: true,
     toneMapped: false,
     vertexShader: /* glsl */ `
@@ -237,6 +240,7 @@ export function boardMaterial(world: World, td: TerrainData, level: number, next
       }
     `,
     fragmentShader: /* glsl */ `
+      ${HEIGHT_GLSL}
       uniform sampler2D uHTex;
       uniform vec2 uHOrigin, uHStep, uHSize;
       uniform float uDpr, uLevel, uNext, uAbove, uGuide, uOpacity;
@@ -247,13 +251,13 @@ export function boardMaterial(world: World, td: TerrainData, level: number, next
       varying float vV;
       void main() {
         vec2 tuv = ((vW.xz - uHOrigin) / uHStep + 0.5) / uHSize;
-        float h = texture2D(uHTex, tuv).r;
+        float h = chartHeight(uHTex, tuv, uHSize);
         float fwH = max(fwidth(h), 1e-5);
         vec2 ex = vec2(1.0 / uHSize.x, 0.0);
         vec2 ez = vec2(0.0, 1.0 / uHSize.y);
         vec2 g = vec2(
-          (texture2D(uHTex, tuv + ex).r - texture2D(uHTex, tuv - ex).r) / (2.0 * uHStep.x),
-          (texture2D(uHTex, tuv + ez).r - texture2D(uHTex, tuv - ez).r) / (2.0 * uHStep.y)
+          (chartHeight(uHTex, tuv + ex, uHSize) - chartHeight(uHTex, tuv - ex, uHSize)) / (2.0 * uHStep.x),
+          (chartHeight(uHTex, tuv + ez, uHSize) - chartHeight(uHTex, tuv - ez, uHSize)) / (2.0 * uHStep.y)
         );
         float px = max(uDpr, 0.5);
         vec2 sunXZ = normalize(uSun.xz + vec2(1e-5));

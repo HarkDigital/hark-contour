@@ -390,6 +390,16 @@ export const MICROCOPY = {
   coordinates: '39°57′N · 75°10′W',
 }
 
+/**
+ * Chart marginalia shared by every sheet (decorative, not claims): one sheet
+ * per chapter lettered 'Sheet 0N · <Label>' (the chapter labels in
+ * src/chapters/index.ts), one scale, US spelling.
+ */
+export const SHEET = {
+  name: (n: number, label: string) => `Sheet ${String(n).padStart(2, '0')} · ${label}`,
+  scale: '1:24,000',
+}
+
 export const SECURITY = {
   eyebrow: 'Hack remediation · Website & data security',
   title: 'Hacked? Breathe.',

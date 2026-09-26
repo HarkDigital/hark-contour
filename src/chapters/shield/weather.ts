@@ -2,6 +2,7 @@ import * as THREE from 'three'
 import type { World } from '../../world/World'
 import type { ChartMaterial } from '../../kit/chart'
 import { C } from '../../kit/chart'
+import { HEIGHT_GLSL } from '../../kit/terrain'
 
 /*
  * THE WEATHER OVERPRINT — a second pass over the chart's own terrain mesh
@@ -107,6 +108,7 @@ const VERT = /* glsl */ `
 
 const FRAG = /* glsl */ `
   #define FN ${FN}
+  ${HEIGHT_GLSL}
   uniform float uTime, uDpr, uFogNear, uFogFar;
   uniform vec4 uEdge;
   uniform float uEdgeFeather, uInterval, uUseTex;
@@ -198,7 +200,7 @@ const FRAG = /* glsl */ `
     float fwQ = max(length(fwidth(q)), 1e-5);
 
     vec2 tuv = ((q - uHOrigin) / uHStep + 0.5) / uHSize;
-    float hgt = texture2D(uHTex, tuv).r;
+    float hgt = chartHeight(uHTex, tuv, uHSize);
     float fC = hgt / uInterval;
     float fwC = max(fwidth(fC), 1e-5);
 
@@ -380,6 +382,8 @@ export function weatherMaterial(world: World, chart: ChartMaterial) {
   }
   const mat = new THREE.ShaderMaterial({
     uniforms: u,
+    // the chart's height-texture sampling mode (H_MANUAL where float filtering is missing)
+    defines: { ...(chart.defines ?? {}) },
     vertexShader: VERT,
     fragmentShader: FRAG,
     transparent: true,

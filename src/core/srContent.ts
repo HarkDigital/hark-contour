@@ -84,12 +84,14 @@ export function buildChapterCopy(id: string, visible = false): HTMLElement | nul
   const div = document.createElement('div')
   div.className = visible ? 'fallback-copy' : 'sr-copy'
   div.innerHTML = html()
+  // the live story (not the static page / a lost GPU): only then do links steer it
+  const live = () => !!window.__hark && !document.documentElement.classList.contains('no-webgl')
   // in-page links drive the story instead of jumping to an empty section
   div.querySelectorAll<HTMLAnchorElement>('a[data-land]').forEach(a =>
     a.addEventListener('click', e => {
       const target = a.dataset.land!
       const hark = window.__hark
-      if (!hark) return
+      if (!hark || !live()) return
       e.preventDefault()
       if (target === 'hero') hark.land('hero')
       else hark.land(target)
@@ -99,6 +101,7 @@ export function buildChapterCopy(id: string, visible = false): HTMLElement | nul
   // item stops only steer the story (focus does the work); never follow the hash
   div.querySelectorAll<HTMLAnchorElement>('a[data-anchor][href^="#"]:not([data-land])').forEach(a =>
     a.addEventListener('click', e => {
+      if (!live()) return
       e.preventDefault()
       const section = a.closest('section')
       const hark = window.__hark

@@ -297,6 +297,11 @@ export class Sound {
     return ctx
   }
 
+  /** Silence for good (the GPU context is gone), without touching the stored preference. */
+  stop() {
+    this.setEnabled(false)
+  }
+
   private setEnabled(on: boolean) {
     if (on === this.enabled) return
     this.enabled = on

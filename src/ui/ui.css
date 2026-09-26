@@ -1790,3 +1790,8 @@ html.motion-off .ch-menu-list li {
     transition: none;
   }
 }
+
+/* the static page (no WebGL, ?read, or a lost GPU context) has its own header */
+html.no-webgl #chrome {
+  display: none !important;
+}

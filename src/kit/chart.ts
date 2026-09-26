@@ -1,6 +1,6 @@
 import * as THREE from 'three'
 import type { World } from '../world/World'
-import type { TerrainData } from './terrain'
+import { HEIGHT_GLSL, heightDefines, type TerrainData } from './terrain'
 
 /*
  * THE CHART KIT — Hark Contour's shared visual language. Every chapter is a
@@ -179,6 +179,7 @@ const CHART_VERT = /* glsl */ `
 `
 
 const CHART_FRAG = /* glsl */ `
+  ${HEIGHT_GLSL}
   uniform float uTime, uDpr, uFogNear, uFogFar, uFog;
   uniform vec3 uSun, uPaper;
   uniform float uInterval, uIndex, uLine, uIndexLine, uCoastLine, uHMin, uHMax, uStepped, uShade, uRelief;
@@ -194,11 +195,11 @@ const CHART_FRAG = /* glsl */ `
   varying vec3 vW;
   varying float vDepth;
 
-  // an isoline of f (1 per integer), wpx device px wide; fades out where lines crowd (no moiré)
+  // an isoline of f (1 per integer), wpx device px wide; fades out smoothly where lines crowd (no moiré, no dashes)
   float isoLine(float f, float fw, float wpx) {
     float d = abs(fract(f - 0.5) - 0.5) / fw;
     float a = 1.0 - smoothstep(wpx * 0.5 - 0.5, wpx * 0.5 + 0.5, d);
-    return a * (1.0 - smoothstep(0.22, 0.6, fw));
+    return a * (1.0 - smoothstep(0.25, 0.85, fw));
   }
 
   vec3 tintRamp(float t) {
@@ -218,19 +219,33 @@ const CHART_FRAG = /* glsl */ `
   void main() {
     // the fine height texture where there is one (smooth lines), else the mesh's
     vec2 tuv = ((vW.xz - uHOrigin) / uHStep + 0.5) / uHSize;
-    float h = mix(vH, texture2D(uHTex, tuv).r, uUseTex);
     float px = max(uDpr, 0.5);
-
     // every derivative up front, in uniform control flow
-    float fC = h / uInterval;
-    float fwC = max(fwidth(fC), 1e-5);
-    float fI = h / (uInterval * uIndex);
-    float fwI = max(fwidth(fI), 1e-5);
-    float fwH = max(fwidth(h), 1e-5);
-    float fWl = -h / uWaterSpacing - uTime * uRipple;
-    float fwWl = max(fwidth(fWl), 1e-5);
+    vec2 wx = dFdx(vW.xz);
+    vec2 wy = dFdy(vW.xz);
     vec2 gP = vW.xz / uGridSize;
     vec2 fwG = max(fwidth(gP), vec2(1e-5));
+    float h = vH;
+    float fwH = fwidth(vH);
+    if (uUseTex > 0.5) {
+      h = chartHeight(uHTex, tuv, uHSize);
+      // line widths from the field's analytic slope (not fwidth of a
+      // piecewise-bilinear surface): even coasts, no dashes at grazing angles
+      vec2 du = vec2(1.0 / uHSize.x, 0.0);
+      vec2 dv = vec2(0.0, 1.0 / uHSize.y);
+      vec2 gw = vec2(
+        chartHeight(uHTex, tuv + du, uHSize) - chartHeight(uHTex, tuv - du, uHSize),
+        chartHeight(uHTex, tuv + dv, uHSize) - chartHeight(uHTex, tuv - dv, uHSize)
+      ) / (2.0 * uHStep);
+      fwH = abs(dot(gw, wx)) + abs(dot(gw, wy));
+    }
+    fwH = max(fwH, 1e-5);
+    float fC = h / uInterval;
+    float fwC = fwH / uInterval;
+    float fI = h / (uInterval * uIndex);
+    float fwI = fwC / uIndex;
+    float fWl = -h / uWaterSpacing - uTime * uRipple;
+    float fwWl = max(fwH / uWaterSpacing, 1e-5);
 
     // layer tints (stepped by index band)
     float t = (h - uHMin) / max(uHMax - uHMin, 1e-3);
@@ -345,6 +360,7 @@ export function chartMaterial(world: World, o: ChartOptions = {}): ChartMaterial
   }
   const m = new THREE.ShaderMaterial({
     uniforms: u,
+    defines: heightDefines(o.terrain),
     vertexShader: CHART_VERT,
     fragmentShader: CHART_FRAG,
     toneMapped: false,
@@ -572,7 +588,9 @@ export function routeRibbon(points: THREE.Vector3[], o: { width?: number; color?
         float dash = uGap <= 0.0 ? 1.0 : (1.0 - smoothstep(uDash - fw, uDash + fw, ph)) * smoothstep(0.0, fw, ph);
         float drawn = 1.0 - smoothstep(uProgress * uLength - fw, uProgress * uLength + fw, vDist);
         float fs = max(fwidth(vSide), 1e-5);
-        float edge = 1.0 - smoothstep(1.0 - fs * 1.5, 1.0, abs(vSide));
+        float edge = 1.0 - smoothstep(max(0.0, 1.0 - fs * 1.5), 1.0, abs(vSide));
+        // a ribbon thinner than ~2 px keeps a coverage floor instead of vanishing
+        edge = max(edge, 0.7 * smoothstep(0.6, 1.2, fs));
         float a = dash * drawn * edge * uOpacity;
         if (a < 0.01) discard;
         gl_FragColor = vec4(uColor, a);

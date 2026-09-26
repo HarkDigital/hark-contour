@@ -63,10 +63,15 @@ async function boot() {
   const loader = createLoader(document.getElementById('loader')!, { skip: params.has('nointro') })
 
   const engine = new Engine(canvas, track, stages)
+  let sound: Sound | null = null
   // the GPU context is gone for good: show the static copy, not an empty canvas
+  // (and drop the live chrome and sound: their controls would steer nothing)
   engine.onContextGone = () => {
     canvas.remove()
     stages?.remove()
+    document.getElementById('chrome')?.remove()
+    sound?.stop()
+    window.__hark = undefined
     renderFallback(track)
   }
   engine.assets.onProgress = (done, total) => loader.progress(total ? done / total : 0)
@@ -76,12 +81,12 @@ async function boot() {
   // skip link mid-story: focus the current chapter's heading (no jump to the hero)
   document.querySelector<HTMLAnchorElement>('.skip-link')?.addEventListener('click', e => {
     const cur = engine.slots[engine.state.index]
-    if (!cur) return
+    if (!cur || document.documentElement.classList.contains('no-webgl')) return
     e.preventDefault()
     engine.focusChapter(cur.def.id)
   })
 
-  const sound = new Sound()
+  sound = new Sound()
   const chrome = createChrome(document.getElementById('chrome')!, engine, sound)
   engine.onFrame.push((f, s) => {
     chrome.update(f, s)

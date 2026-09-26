@@ -33,6 +33,51 @@ function srgb(hex: string): THREE.Vector3 {
   return new THREE.Vector3(((n >> 16) & 255) / 255, ((n >> 8) & 255) / 255, (n & 255) / 255)
 }
 
+/**
+ * A tileable 512² paper tooth: fine grain (1 px lattice), mottle (4 px) and
+ * long fibres (32 × 2 px), baked once instead of three value noises per pixel.
+ */
+function paperTooth(): THREE.DataTexture {
+  const N = 512
+  const hash = (x: number, y: number) => {
+    let h = (x * 374761393 + y * 668265263) | 0
+    h = Math.imul(h ^ (h >>> 13), 1274126177)
+    return ((h ^ (h >>> 16)) >>> 0) / 4294967296
+  }
+  // periodic value noise: cell sizes divide N, lattice indices wrap
+  const vn = (x: number, y: number, cx: number, cy: number, seed: number) => {
+    const px = N / cx
+    const py = N / cy
+    const fx = x / cx
+    const fy = y / cy
+    const ix = Math.floor(fx)
+    const iy = Math.floor(fy)
+    const tx = fx - ix
+    const ty = fy - iy
+    const ux = tx * tx * (3 - 2 * tx)
+    const uy = ty * ty * (3 - 2 * ty)
+    const h = (i: number, j: number) => hash(((i % px) + px) % px + seed, ((j % py) + py) % py - seed)
+    const a = h(ix, iy) + (h(ix + 1, iy) - h(ix, iy)) * ux
+    const b = h(ix, iy + 1) + (h(ix + 1, iy + 1) - h(ix, iy + 1)) * ux
+    return a + (b - a) * uy
+  }
+  const data = new Uint8Array(N * N)
+  for (let y = 0; y < N; y++) {
+    for (let x = 0; x < N; x++) {
+      const t = vn(x, y, 1, 1, 7) * 0.55 + vn(x, y, 4, 4, 91) * 0.3 + vn(x, y, 32, 2, 313) * 0.15
+      data[y * N + x] = Math.round(Math.min(1, Math.max(0, t)) * 255)
+    }
+  }
+  const tex = new THREE.DataTexture(data, N, N, THREE.RedFormat, THREE.UnsignedByteType)
+  tex.wrapS = tex.wrapT = THREE.RepeatWrapping
+  tex.magFilter = THREE.LinearFilter
+  tex.minFilter = THREE.LinearFilter
+  tex.generateMipmaps = false
+  tex.colorSpace = THREE.NoColorSpace
+  tex.needsUpdate = true
+  return tex
+}
+
 const PAPER = '#f2ecdf'
 const LINE = '#8c5f3d'
 const INDEX = '#5e3b22'
@@ -40,6 +85,8 @@ const INDEX = '#5e3b22'
 const FinalShader = {
   uniforms: {
     tDiffuse: { value: null as THREE.Texture | null },
+    /** the paper tooth (paperTooth()) */
+    uTooth: { value: null as THREE.Texture | null },
     uTime: { value: 0 },
     uResolution: { value: new THREE.Vector2(1, 1) },
     uDpr: { value: 1 },
@@ -69,7 +116,7 @@ const FinalShader = {
     void main() { vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }
   `,
   fragmentShader: /* glsl */ `
-    uniform sampler2D tDiffuse;
+    uniform sampler2D tDiffuse, uTooth;
     uniform float uTime, uDpr, uTransition, uCutSide, uGlitch, uGrain, uVignette, uFlash, uFade, uContour, uDensity;
     uniform vec2 uResolution;
     uniform vec3 uPaper, uLineC, uIndexC, uFadeColor;
@@ -128,28 +175,31 @@ const FinalShader = {
       // a unit, so the front is always a crisp contour line. At the boundary
       // the whole frame is the chart; after it, the bands drain away and the
       // next chapter shows through, lowest ground first.
-      float drift = (1.0 - t) * uCutSide * 0.55;
-      float R = fbm(q * 2.1 + vec2(drift, drift * 0.45) + 3.7);
-      float dens = 9.0;
-      float fR = R * dens;
-      float fwR = max(fwidth(fR), 1e-4);
-      float fR5 = fR / 5.0;
-      float fwR5 = max(fwidth(fR5), 1e-4);
+      // (a uniform branch: no noise cost while no cut is on screen)
       float px = max(uDpr, 0.5);
-      float lvl = mix(0.4, 8.8, smoothstep(0.06, 0.88, t));
-      float lvlQ = floor(lvl) + smoothstep(0.35, 0.65, fract(lvl));
-      float cover = t > 0.001 ? 1.0 - smoothstep(lvlQ - fwR, lvlQ + fwR, fR) : 0.0;
-      float ln = isoLine(fR, fwR, 1.1 * px);
-      float ix = isoLine(fR5, fwR5, 2.0 * px);
-      // the flood front: the band edge, drawn a touch heavier
-      float front = (1.0 - smoothstep(0.9 * px, 1.9 * px, abs(fR - lvlQ) / fwR)) * step(0.001, t) * (1.0 - step(8.7, lvlQ));
-      vec3 chart = mix(uPaper, uLineC, ln * 0.78);
-      chart = mix(chart, uIndexC, max(ix, front));
-      col = mix(col, chart, cover);
+      if (t > 0.001) {
+        float drift = (1.0 - t) * uCutSide * 0.55;
+        float R = fbm(q * 2.1 + vec2(drift, drift * 0.45) + 3.7);
+        float dens = 9.0;
+        float fR = R * dens;
+        float fwR = max(fwidth(fR), 1e-4);
+        float fR5 = fR / 5.0;
+        float fwR5 = max(fwidth(fR5), 1e-4);
+        float lvl = mix(0.4, 8.8, smoothstep(0.06, 0.88, t));
+        float lvlQ = floor(lvl) + smoothstep(0.35, 0.65, fract(lvl));
+        float cover = 1.0 - smoothstep(lvlQ - fwR, lvlQ + fwR, fR);
+        float ln = isoLine(fR, fwR, 1.1 * px);
+        float ix = isoLine(fR5, fwR5, 2.0 * px);
+        // the flood front: the band edge, drawn a touch heavier
+        float front = (1.0 - smoothstep(0.9 * px, 1.9 * px, abs(fR - lvlQ) / fwR)) * (1.0 - step(8.7, lvlQ));
+        vec3 chart = mix(uPaper, uLineC, ln * 0.78);
+        chart = mix(chart, uIndexC, max(ix, front));
+        col = mix(col, chart, cover);
+      }
 
       // --- paper ------------------------------------------------------------
-      vec2 cp = gl_FragCoord.xy / px; // CSS px: the tooth has a physical size
-      float tooth = vnoise(cp * 0.85) * 0.55 + vnoise(cp * 0.21 + 11.0) * 0.3 + vnoise(vec2(cp.x * 0.035, cp.y * 0.6) + 5.0) * 0.15;
+      // a baked, tileable 512² tooth at one texel per CSS px (static: paper doesn't shimmer)
+      float tooth = texture2D(uTooth, gl_FragCoord.xy / px / 512.0).r;
       col *= 1.0 + (tooth - 0.5) * uGrain;
 
       // warm margin
@@ -279,7 +329,8 @@ class ScenePass extends Pass {
 export class Post {
   composer: EffectComposer
   scenePass: ScenePass
-  bloom: UnrealBloomPass
+  /** created the first time a chapter asks for bloom (the printed look has none) */
+  bloom: UnrealBloomPass | null = null
   final: ShaderPass
   /**
    * Chapters write targets here every frame (the engine resets them to
@@ -306,12 +357,19 @@ export class Post {
     this.composer = new EffectComposer(renderer, rt)
     this.scenePass = new ScenePass(scene, camera, size.x, size.y, Post.samplesFor(renderer.getPixelRatio()))
     this.composer.addPass(this.scenePass)
-    this.bloom = new UnrealBloomPass(new THREE.Vector2(size.x / 2, size.y / 2), 0, 0.4, 1.0)
-    this.bloom.enabled = false
-    this.composer.addPass(this.bloom)
     this.composer.addPass(new OutputPass())
     this.final = new ShaderPass(FinalShader)
+    this.final.uniforms.uTooth.value = paperTooth()
     this.composer.addPass(this.final)
+  }
+
+  private ensureBloom(): UnrealBloomPass {
+    if (!this.bloom) {
+      const size = this.renderer.getDrawingBufferSize(new THREE.Vector2())
+      this.bloom = new UnrealBloomPass(new THREE.Vector2(size.x / 2, size.y / 2), 0, 0.4, 1.0)
+      this.composer.insertPass(this.bloom, 1)
+    }
+    return this.bloom
   }
 
   /** Colour of the calm (reduced-motion / Motion off) fade: the paper. */
@@ -333,7 +391,7 @@ export class Post {
   compileAsync(): Promise<unknown> {
     const quad = new THREE.Mesh(new THREE.PlaneGeometry(2, 2))
     const cam = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1)
-    const b = this.bloom as unknown as Record<string, unknown>
+    const b = (this.bloom ?? {}) as unknown as Record<string, unknown>
     const mats: THREE.Material[] = []
     const add = (m: unknown) => {
       if (m && (m as THREE.Material).isMaterial) mats.push(m as THREE.Material)
@@ -365,7 +423,7 @@ export class Post {
     this.scenePass.setSamples(Post.samplesFor(dpr))
     this.composer.setPixelRatio(dpr)
     this.composer.setSize(w, h)
-    this.bloom.resolution.set((w * dpr) / 2, (h * dpr) / 2)
+    this.bloom?.resolution.set((w * dpr) / 2, (h * dpr) / 2)
     this.final.uniforms.uResolution.value.set(w * dpr, h * dpr)
     this.final.uniforms.uDpr.value = dpr
   }
@@ -387,11 +445,14 @@ export class Post {
       }
       if (!this.flashOk) c.flash = 0
     } else this.flashLive = false
-    // a pass that adds nothing costs nothing
-    this.bloom.enabled = c.bloomStrength > 0.01
-    this.bloom.strength = c.bloomStrength
-    this.bloom.radius = c.bloomRadius
-    this.bloom.threshold = c.bloomThreshold
+    // a pass that adds nothing costs nothing (and isn't even built until asked for)
+    if (c.bloomStrength > 0.01 || this.bloom) {
+      const bloom = this.ensureBloom()
+      bloom.enabled = c.bloomStrength > 0.01
+      bloom.strength = c.bloomStrength
+      bloom.radius = c.bloomRadius
+      bloom.threshold = c.bloomThreshold
+    }
     this.renderer.toneMappingExposure = c.exposure
     const u = this.final.uniforms
     u.uTime.value = time

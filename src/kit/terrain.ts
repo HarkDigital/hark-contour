@@ -1,4 +1,5 @@
 import * as THREE from 'three'
+import { nextFrame } from '../core/yield'
 
 /*
  * Height-field terrain for the chart material (src/kit/chart.ts).
@@ -58,6 +59,44 @@ export interface TerrainData {
   depth: number
   cx: number
   cz: number
+  /**
+   * true where the GPU can't filter float textures: the texture is NEAREST
+   * and shaders must read it through HEIGHT_GLSL's chartHeight() with the
+   * H_MANUAL define (heightDefines(geo)) for a full-precision bilinear
+   */
+  manual: boolean
+}
+
+/**
+ * GLSL: sample a terrain height texture. Include it in any shader that reads
+ * a TerrainData.heightTex and pass `defines: heightDefines(geo)`:
+ *   float h = chartHeight(uHTex, uv, uHSize);
+ * Hardware bilinear where float filtering exists; else an exact fp32 bilinear
+ * from four texelFetch taps (half float would make contours jagged).
+ */
+export const HEIGHT_GLSL = /* glsl */ `
+  float chartHeight(sampler2D t, vec2 uv, vec2 size) {
+  #ifdef H_MANUAL
+    vec2 p = uv * size - 0.5;
+    vec2 i = floor(p);
+    vec2 f = p - i;
+    ivec2 hi = ivec2(size) - 1;
+    ivec2 a = clamp(ivec2(i), ivec2(0), hi);
+    ivec2 b = clamp(ivec2(i) + 1, ivec2(0), hi);
+    float h00 = texelFetch(t, a, 0).r;
+    float h10 = texelFetch(t, ivec2(b.x, a.y), 0).r;
+    float h01 = texelFetch(t, ivec2(a.x, b.y), 0).r;
+    float h11 = texelFetch(t, b, 0).r;
+    return mix(mix(h00, h10, f.x), mix(h01, h11, f.x), f.y);
+  #else
+    return texture2D(t, uv).r;
+  #endif
+  }
+`
+
+/** The shader defines a terrain's height texture needs (see HEIGHT_GLSL). */
+export function heightDefines(geo?: THREE.BufferGeometry): Record<string, string> {
+  return (geo?.userData as TerrainData | undefined)?.manual ? { H_MANUAL: '' } : {}
 }
 
 function floatLinear(): boolean {
@@ -65,7 +104,7 @@ function floatLinear(): boolean {
   return !!r && r.extensions.has('OES_texture_float_linear')
 }
 
-export function terrainGeometry(o: TerrainOptions): THREE.BufferGeometry {
+function layout(o: TerrainOptions) {
   const sx = Math.max(2, Math.round(o.seg ?? 200))
   const sz = Math.max(2, Math.round(o.segZ ?? (sx * o.depth) / o.width))
   const m = Math.max(1, Math.round(o.detail ?? 3))
@@ -74,21 +113,49 @@ export function terrainGeometry(o: TerrainOptions): THREE.BufferGeometry {
   // the fine field: (sx*m+1) × (sz*m+1) samples; mesh vertices are every m-th
   const tx = sx * m + 1
   const tz = sz * m + 1
-  const dxT = o.width / (sx * m)
-  const dzT = o.depth / (sz * m)
-  const x0 = cx - o.width / 2
-  const z0 = cz - o.depth / 2
-  const field = new Float32Array(tx * tz)
+  return { sx, sz, m, cx, cz, tx, tz, dxT: o.width / (sx * m), dzT: o.depth / (sz * m), x0: cx - o.width / 2, z0: cz - o.depth / 2 }
+}
+
+function sampleRow(o: TerrainOptions, L: ReturnType<typeof layout>, field: Float32Array, j: number) {
+  const z = L.z0 + j * L.dzT
+  const row = j * L.tx
+  for (let i = 0; i < L.tx; i++) field[row + i] = o.height(L.x0 + i * L.dxT, z)
+}
+
+export function terrainGeometry(o: TerrainOptions): THREE.BufferGeometry {
+  const L = layout(o)
+  const field = new Float32Array(L.tx * L.tz)
+  for (let j = 0; j < L.tz; j++) sampleRow(o, L, field, j)
+  return build(o, L, field)
+}
+
+/**
+ * terrainGeometry() without a long task: samples the height field in slices
+ * of ~`sliceMs`, yielding a frame between them (the loader keeps animating).
+ * Prefer it in chapter init for any terrain over ~100k samples.
+ */
+export async function terrainGeometryAsync(o: TerrainOptions, sliceMs = 8): Promise<THREE.BufferGeometry> {
+  const L = layout(o)
+  const field = new Float32Array(L.tx * L.tz)
+  let t0 = performance.now()
+  for (let j = 0; j < L.tz; j++) {
+    sampleRow(o, L, field, j)
+    if (performance.now() - t0 > sliceMs) {
+      await nextFrame()
+      t0 = performance.now()
+    }
+  }
+  return build(o, L, field)
+}
+
+function build(o: TerrainOptions, L: ReturnType<typeof layout>, field: Float32Array): THREE.BufferGeometry {
+  const { sx, sz, m, cx, cz, tx, tz, dxT, dzT, x0, z0 } = L
   let hMin = Infinity
   let hMax = -Infinity
-  for (let j = 0; j < tz; j++) {
-    const z = z0 + j * dzT
-    for (let i = 0; i < tx; i++) {
-      const h = o.height(x0 + i * dxT, z)
-      field[j * tx + i] = h
-      if (h < hMin) hMin = h
-      if (h > hMax) hMax = h
-    }
+  for (let i = 0; i < field.length; i++) {
+    const h = field[i]
+    if (h < hMin) hMin = h
+    if (h > hMax) hMax = h
   }
   const at = (i: number, j: number) => field[Math.min(tz - 1, Math.max(0, j)) * tx + Math.min(tx - 1, Math.max(0, i))]
 
@@ -153,18 +220,13 @@ export function terrainGeometry(o: TerrainOptions): THREE.BufferGeometry {
   )
   geo.boundingSphere = geo.boundingBox.getBoundingSphere(new THREE.Sphere())
 
-  // float-linear where the GPU filters float textures, else half float (always filterable)
-  let tex: THREE.DataTexture
-  if (floatLinear()) {
-    tex = new THREE.DataTexture(field, tx, tz, THREE.RedFormat, THREE.FloatType)
-  } else {
-    const half = new Uint16Array(field.length)
-    for (let i = 0; i < field.length; i++) half[i] = THREE.DataUtils.toHalfFloat(field[i])
-    tex = new THREE.DataTexture(half, tx, tz, THREE.RedFormat, THREE.HalfFloatType)
-  }
-  tex.magFilter = THREE.LinearFilter
-  tex.minFilter = THREE.LinearMipmapLinearFilter
-  tex.generateMipmaps = true
+  // exact float heights: hardware-filtered where the GPU filters float
+  // textures; else NEAREST + chartHeight()'s manual bilinear (H_MANUAL)
+  const manual = !floatLinear()
+  const tex = new THREE.DataTexture(field, tx, tz, THREE.RedFormat, THREE.FloatType)
+  tex.magFilter = manual ? THREE.NearestFilter : THREE.LinearFilter
+  tex.minFilter = manual ? THREE.NearestFilter : THREE.LinearMipmapLinearFilter
+  tex.generateMipmaps = !manual
   tex.wrapS = tex.wrapT = THREE.ClampToEdgeWrapping
   tex.colorSpace = THREE.NoColorSpace
   tex.needsUpdate = true
@@ -179,6 +241,7 @@ export function terrainGeometry(o: TerrainOptions): THREE.BufferGeometry {
     depth: o.depth,
     cx,
     cz,
+    manual,
   }
   geo.userData = data
   return geo
