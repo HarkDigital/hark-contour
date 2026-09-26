@@ -2,7 +2,7 @@
 //
 //   node scripts/shot.mjs --frames=hero:0,hero:0.5,work:0.3 [--port=5173] [--out=shots]
 //                         [--w=1440] [--h=900] [--mobile] [--wait=1800] [--only=hero]
-//                         [--tag=name] [--mouse=0.3,-0.2] [--rm]
+//                         [--tag=name] [--mouse=0.3,-0.2] [--rm] [--norot] [--nochrome]
 //
 // Each frame is "<chapter>:<local 0..1>" or "p:<global 0..1>". Images land in
 // <out>/<tag?>-<chapter>-<local>.png. Console errors from the page are printed,
@@ -66,6 +66,16 @@ try {
   await page.goto(`http://localhost:${port}/?${q}`, { waitUntil: 'load', timeout: 90000 })
   await page.waitForFunction('window.__hark && window.__hark.ready', { timeout: 90000 })
   await new Promise(r => setTimeout(r, 800))
+  // --nochrome: hide the persistent chrome (share images)
+  if (args.nochrome) await page.addStyleTag({ content: '#chrome{display:none!important}' })
+  // --norot: dismiss the rotate card ("Continue anyway") on short-landscape phone shots
+  if (args.norot) {
+    await page.evaluate(() => {
+      const b = [...document.querySelectorAll('.rot button')].find(x => /continue/i.test(x.textContent || ''))
+      if (b) b.click()
+    })
+    await new Promise(r => setTimeout(r, 400))
+  }
 
   if (args.mouse) {
     const [mx, my] = String(args.mouse).split(',').map(Number)

@@ -358,13 +358,7 @@ export default function create(): Chapter {
       islMat.polygonOffsetUnits = -2
       for (const m of [seaMat, islMat]) {
         // lifted, the sea stays a calm, nearly flat plane: only land rises
-        m.onBeforeCompile = shader => {
-          shader.vertexShader = shader.vertexShader.replace(
-            'p.y = uBase + aH * uLift;',
-            `p.y = uBase + (aH > 0.0 ? aH : aH * ${SEA_K.toFixed(3)}) * uLift;`,
-          )
-        }
-        m.customProgramCacheKey = () => 'hark-hero-flat-sea'
+        m.uniforms.uSeaLift.value = SEA_K
         m.uniforms.uWaterDeep.value.set('#d6e3e1')
         m.uniforms.uEdge.value.set(X0, Z0, HALF, HALF)
         m.uniforms.uEdgeFeather.value = 0.05

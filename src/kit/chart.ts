@@ -91,6 +91,8 @@ export interface ChartOptions {
   gridSize?: number
   /** initial lift 0 (flat printed map) .. 1 (full relief) (default 1) */
   lift?: number
+  /** how far the sea floor sinks with the lift, 0..1 (default 1; 0 keeps the sea a flat plane) */
+  seaLift?: number
   /** fog on (default true) */
   fog?: boolean
   /**
@@ -106,6 +108,8 @@ export interface ChartOptions {
 export interface ChartUniforms {
   [name: string]: THREE.IUniform
   uLift: { value: number }
+  /** 0..1 how far the sea floor sinks with the lift (0 = the sea stays a flat plane) */
+  uSeaLift: { value: number }
   uBase: { value: number }
   uInterval: { value: number }
   uIndex: { value: number }
@@ -155,14 +159,15 @@ export type ChartMaterial = THREE.ShaderMaterial & { uniforms: ChartUniforms }
 const CHART_VERT = /* glsl */ `
   attribute float aH;
   attribute vec2 aG;
-  uniform float uLift, uBase;
+  uniform float uLift, uBase, uSeaLift;
   varying float vH;
   varying vec2 vG;
   varying vec3 vW;
   varying float vDepth;
   void main() {
     vec3 p = position;
-    p.y = uBase + aH * uLift;
+    // land rises with uLift; the sea floor by uSeaLift of that (0 keeps the sea a flat plane)
+    p.y = uBase + (aH > 0.0 ? aH : aH * uSeaLift) * uLift;
     vH = aH;
     vG = aG;
     vec4 w = modelMatrix * vec4(p, 1.0);
@@ -298,6 +303,7 @@ export function chartMaterial(world: World, o: ChartOptions = {}): ChartMaterial
   const u: ChartUniforms = {
     ...world.chart,
     uLift: { value: o.lift ?? 1 },
+    uSeaLift: { value: o.seaLift ?? 1 },
     uBase: { value: 0 },
     uInterval: { value: interval },
     uIndex: { value: o.index ?? 5 },
@@ -519,7 +525,8 @@ export function routeRibbon(points: THREE.Vector3[], o: { width?: number; color?
   const idx: number[] = []
   for (let i = 0; i < n - 1; i++) {
     const a = i * 2
-    idx.push(a, a + 1, a + 2, a + 1, a + 3, a + 2)
+    // wound to face up (+y) for any direction of travel: visible from above with FrontSide
+    idx.push(a, a + 2, a + 1, a + 1, a + 2, a + 3)
   }
   const geo = new THREE.BufferGeometry()
   geo.setAttribute('position', new THREE.BufferAttribute(pos, 3))
