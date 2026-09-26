@@ -22,6 +22,10 @@ import { HEIGHT_GLSL } from '../../kit/terrain'
  *    H (the bar slides up into a crossbar, the right stem grows out of it).
  *  - THE WATCH: contours the radar sweep has just passed print in survey
  *    vermilion (the dial itself is radar.ts, a level disc over the site).
+ *  - A WATER NAME knocks the isobars out along its baseline (a capsule).
+ *  - THE VEIL: a feathered screen rectangle (NDC) where the chart fades back
+ *    into the paper, a knock-out behind a heading set over the chart (tall
+ *    screens: the offshore islet would otherwise sit under "24/7").
  *
  * Everything is premultiplied flat colour, anti-aliased with fwidth, faded
  * into the paper at the chart's margin and with distance like the chart.
@@ -54,6 +58,14 @@ export interface WeatherUniforms {
   uFront: { value: THREE.Vector4 }
   uRadar: { value: THREE.Vector4 }
   uRadarK: { value: THREE.Vector4 }
+  /** a water name's baseline (x0, z0, x1, z1): the isobars break around its letters */
+  uName: { value: THREE.Vector4 }
+  /** its half-height (world) and amount 0..1 */
+  uNameK: { value: THREE.Vector2 }
+  /** knock-out rectangle in NDC (x0, y0, x1, y1) */
+  uVeil: { value: THREE.Vector4 }
+  /** amount 0..1, feather x, feather y (NDC) */
+  uVeilK: { value: THREE.Vector4 }
 }
 
 /** the pressure field's parameters (mirrors the uniforms; the CPU twin reads these) */
@@ -92,17 +104,20 @@ export function pressureAt(f: Field, x: number, z: number): number {
 
 const VERT = /* glsl */ `
   attribute float aH;
-  uniform float uLift, uBase;
+  uniform float uLift, uBase, uSeaLift;
   varying vec3 vW;
   varying float vDepth;
+  varying vec4 vClip;
   void main() {
     vec3 p = position;
-    p.y = uBase + aH * uLift;
+    // exactly the chart's surface (the sea floor sinks by uSeaLift of the lift)
+    p.y = uBase + (aH > 0.0 ? aH : aH * uSeaLift) * uLift;
     vec4 w = modelMatrix * vec4(p, 1.0);
     vW = w.xyz;
     vec4 mv = viewMatrix * w;
     vDepth = -mv.z;
     gl_Position = projectionMatrix * mv;
+    vClip = gl_Position;
   }
 `
 
@@ -110,6 +125,7 @@ const FRAG = /* glsl */ `
   #define FN ${FN}
   ${HEIGHT_GLSL}
   uniform float uTime, uDpr, uFogNear, uFogFar;
+  uniform vec3 uPaper;
   uniform vec4 uEdge;
   uniform float uEdgeFeather, uInterval, uUseTex;
   uniform sampler2D uHTex;
@@ -124,8 +140,11 @@ const FRAG = /* glsl */ `
   uniform vec2 uWarm[FN];
   uniform vec4 uFront;
   uniform vec4 uRadar, uRadarK;
+  uniform vec4 uVeil, uVeilK, uName;
+  uniform vec2 uNameK;
   varying vec3 vW;
   varying float vDepth;
+  varying vec4 vClip;
 
   const float TAU = 6.2831853;
 
@@ -257,6 +276,12 @@ const FRAG = /* glsl */ `
       vec4 g = uGap[i];
       gap *= 1.0 - g.w * (1.0 - smoothstep(g.z * 0.7, g.z, distance(q, g.xy)));
     }
+    {
+      vec2 na = uName.xy;
+      vec2 nb = uName.zw - na;
+      float nt = clamp(dot(q - na, nb) / max(dot(nb, nb), 1e-6), 0.0, 1.0);
+      gap *= 1.0 - uNameK.y * (1.0 - smoothstep(uNameK.x * 0.75, uNameK.x, distance(q, na + nb * nt)));
+    }
     float lineA = max(isoLine(fP, fwP, 1.15 * px), isoLine(fI, fwI, 2.2 * px));
     lineA *= uIso * gap * (1.0 - kn);
     float level = floor(fP + 0.5) * 4.0;
@@ -329,6 +354,12 @@ const FRAG = /* glsl */ `
     float la = (1.0 - smoothstep(-fwL, fwL, letter)) * uLetterK.y;
     acc = over(acc, uLetterC, la);
 
+    // the veil: chart and overprint fade back into the paper behind a heading
+    vec2 ndc = vClip.xy / vClip.w;
+    vec2 vo = max(abs(ndc - (uVeil.xy + uVeil.zw) * 0.5) - (uVeil.zw - uVeil.xy) * 0.5, 0.0) / max(uVeilK.yz, vec2(1e-3));
+    float veil = uVeilK.x * (1.0 - smoothstep(0.0, 1.0, length(vo)));
+    acc = over(acc, uPaper, veil);
+
     // the chart's margin, then distance, fade into the paper
     vec2 ed = uEdge.zw - abs(q - uEdge.xy);
     float margin = uEdgeFeather > 0.0 ? smoothstep(0.0, uEdgeFeather, min(ed.x, ed.y)) : 1.0;
@@ -345,8 +376,10 @@ export function weatherMaterial(world: World, chart: ChartMaterial) {
     uDpr: world.chart.uDpr,
     uFogNear: world.chart.uFogNear,
     uFogFar: world.chart.uFogFar,
-    // share the chart's own lift, margin and height texture by reference
+    uPaper: world.chart.uPaper,
+    // share the chart's own lift, sea lift, margin and height texture by reference
     uLift: cu.uLift,
+    uSeaLift: cu.uSeaLift,
     uBase: cu.uBase,
     uEdge: cu.uEdge,
     uEdgeFeather: cu.uEdgeFeather,
@@ -379,6 +412,10 @@ export function weatherMaterial(world: World, chart: ChartMaterial) {
     uFront: { value: new THREE.Vector4(0, 0, 0, 0) },
     uRadar: { value: new THREE.Vector4(0, 0, 0, 0) },
     uRadarK: { value: new THREE.Vector4(1.2, 3.6, 1, 0) },
+    uName: { value: new THREE.Vector4(0, 0, 0, 0) },
+    uNameK: { value: new THREE.Vector2(0.4, 0) },
+    uVeil: { value: new THREE.Vector4(0, 0, 0, 0) },
+    uVeilK: { value: new THREE.Vector4(0, 0.1, 0.1, 0) },
   }
   const mat = new THREE.ShaderMaterial({
     uniforms: u,

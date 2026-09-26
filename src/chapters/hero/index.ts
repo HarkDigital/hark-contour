@@ -1,12 +1,13 @@
 import * as THREE from 'three'
 import type { CameraPose, Chapter, ChapterContext, Frame } from '../../core/types'
 import { el, rise, setRise, reveal } from '../../core/dom'
-import { BRAND, MICROCOPY } from '../../content'
+import { BRAND, MICROCOPY, SHEET } from '../../content'
 import { clamp, ease, lerp, segment, smoothstep } from '../../core/math'
 import { nextFrame } from '../../core/yield'
 import { C, chartMaterial, ensureFonts, marker, routeRibbon, type ChartMaterial } from '../../kit/chart'
-import { terrainGeometry } from '../../kit/terrain'
-import { buildLand, drapeFull, GRID, HALF, INTERVAL, PEAK, SEA_K, toWorld, X0, Z0, type Land } from './land'
+import { markField } from '../../kit/markField'
+import { terrainGeometryAsync } from '../../kit/terrain'
+import { buildLand, drapeFull, GRID, HALF, INTERVAL, PEAK, S, SEA_K, toWorld, X0, Z0, type Land } from './land'
 import { flatLabel, redrawLabel, sheetFrame, type SheetUniforms } from './sheet'
 import './hero.css'
 
@@ -18,14 +19,20 @@ import './hero.css'
  *              graduated border; the title block sits in the sheet's margin.
  *              After 'hark:reveal' the chart prints outward from the island
  *              (~1.6 s), the border draws itself round, the rings drift.
- *   0.1 – 0.55 RELIEF: the drone tilts from top-down to a low oblique while the
+ *   0.1 – 0.5  RELIEF: the drone tilts from top-down to a low oblique while the
  *              map lifts into relief (uLift 0 → 1); the sheet's frame lets go
  *              and the sea runs on into the paper; a glide along the NW ridge;
  *              dashed vermilion survey lines trace both crests and a benchmark
  *              grows on the diamond summit (its contours turn vermilion).
- *   0.55–0.93  PAYOFF: a 3/4 aerial, island right of centre (upper half on
- *              portrait), 'Make the internet listen.' + two CTAs.
+ *   0.5 – 0.93 PAYOFF: the drone rises and swings round to a 3/4 aerial from the
+ *              south-south-west, so the mark reads in its own orientation (its
+ *              diagonal near 45°), island right of centre (upper half on
+ *              portrait); 'Make the internet listen.' + two CTAs draw on from
+ *              0.54 and are settled well before the 0.8 anchor.
  *   0.93 – 1   drift out over the open sea under the contour flood.
+ *
+ * The loader's island hands over to this one (a match cut): buildKeys()
+ * publishes the mark's first-frame rect as --hark-isl-x / -y / -h on <html>.
  *
  * Everything is a pure function of `local` (plus frame.time for the idle orbit
  * and the ring drift, and a one-off wall-clock print-on at reveal).
@@ -99,6 +106,8 @@ class Track {
 }
 
 const DEG = Math.PI / 180
+/** payoff azimuth (deg): the drone south-south-west of the summit */
+const PAZ = -9
 
 export default function create(): Chapter {
   const group = new THREE.Group()
@@ -145,6 +154,8 @@ export default function create(): Chapter {
   let camEl = 89
   let camAz = 0
   let parallax = 0.1
+  /** the sheet's marginal lettering grows on small desktop sheets so it stays legible (phones letter it larger already) */
+  let marginScale = 1
 
   const fit = (w: number, h: number, x0: number, x1: number, y0: number, y1: number, rx: number, ry: number, fov: number) => {
     const tanV = Math.tan((fov / 2) * DEG)
@@ -171,32 +182,46 @@ export default function create(): Chapter {
       P = fit(w, h, w * 0.42, w - gut * 0.5, top, h - bot * 0.8, 6.2, 4.8, FP)
     } else {
       I = fit(w, h, gut * 0.7, w - gut * 0.7, iRect.bottom + 22, h - bot + 12, HALF + 0.5, HALF + 1.1, FI)
-      P = fit(w, h, gut * 0.5, w - gut * 0.5, top - 10, h * 0.55, 7.3, 4.6, FP)
+      // the massif centred in the band above the headline (the island is width-bound here)
+      const pTop = payoff && payoff.offsetHeight > 0 ? payoff.offsetTop : h
+      P = fit(w, h, gut * 0.5, w - gut * 0.5, top - 10, Math.min(h * 0.58, pTop - 40), 7.0, 4.6, FP)
     }
+    // the payoff looks from the south-south-west: at ~45° elevation an azimuth near -10° puts the
+    // mark's diagonal at ~45° on screen, the way the mark itself is drawn
     const keys: Key[] = portrait
       ? [
           { t: 0.0, v: [0, 0, I.ld, 89.4, 0, I.sx, I.sy, FI] },
           { t: 0.08, v: [0, 0, I.ld - 0.015, 89.4, 0, I.sx, I.sy, FI] },
           { t: 0.24, v: [-0.4, 0.4, I.ld - 0.1, 62, -5, 0, I.sy * 0.2, 30] },
           { t: 0.38, v: [-1.6, -0.2, P.ld - 0.12, 34, -30, 0, 0.06, FP] },
-          { t: 0.5, v: [0.2, 0.0, P.ld - 0.18, 28, -6, 0, 0.1, FP] },
-          { t: 0.62, v: [0, 0, P.ld - 0.04, 42, 22, P.sx, P.sy, FP] },
-          { t: 0.72, v: [0, 0, P.ld, 46, 28, P.sx, P.sy, FP] },
-          { t: 0.92, v: [0, 0, P.ld + 0.02, 47, 33, P.sx, P.sy, FP] },
-          { t: 1.0, v: [-4.2, 1.4, P.ld + 0.12, 42, 38, P.sx, P.sy, FP] },
+          { t: 0.48, v: [0.2, 0.0, P.ld - 0.16, 29, 2, 0, 0.1, FP] },
+          { t: 0.58, v: [0, 0, P.ld - 0.03, 42, PAZ + 3, P.sx, P.sy, FP] },
+          { t: 0.68, v: [0, 0, P.ld, 46, PAZ, P.sx, P.sy, FP] },
+          { t: 0.92, v: [0, 0, P.ld + 0.02, 47, PAZ - 3, P.sx, P.sy, FP] },
+          { t: 1.0, v: [-4.2, 1.4, P.ld + 0.12, 42, PAZ - 9, P.sx, P.sy, FP] },
         ]
       : [
           { t: 0.0, v: [0, 0, I.ld, 89.4, 0, I.sx, I.sy, FI] },
           { t: 0.08, v: [0, 0, I.ld - 0.015, 89.4, 0, I.sx, I.sy, FI] },
           { t: 0.24, v: [-0.3, 0.5, I.ld - 0.12, 62, -5, I.sx * 0.55, I.sy * 0.4, 30] },
           { t: 0.38, v: [-1.4, -0.4, P.ld - 0.3, 34, -30, 0.1, 0.04, FP] },
-          { t: 0.5, v: [0.3, 0.1, P.ld - 0.36, 27, -6, 0.06, 0.04, FP] },
-          { t: 0.62, v: [0, 0, P.ld - 0.04, 40, 22, P.sx, P.sy, FP] },
-          { t: 0.72, v: [0, 0, P.ld, 44, 28, P.sx, P.sy, FP] },
-          { t: 0.92, v: [0, 0, P.ld + 0.02, 45, 33, P.sx, P.sy, FP] },
-          { t: 1.0, v: [-4.5, 1.2, P.ld + 0.12, 40, 38, P.sx, P.sy, FP] },
+          { t: 0.48, v: [0.3, 0.1, P.ld - 0.32, 28, 2, 0.08, 0.04, FP] },
+          { t: 0.58, v: [0, 0, P.ld - 0.03, 40, PAZ + 3, P.sx, P.sy, FP] },
+          { t: 0.68, v: [0, 0, P.ld, 44, PAZ, P.sx, P.sy, FP] },
+          { t: 0.92, v: [0, 0, P.ld + 0.02, 45, PAZ - 3, P.sx, P.sy, FP] },
+          { t: 1.0, v: [-4.5, 1.2, P.ld + 0.12, 40, PAZ - 9, P.sx, P.sy, FP] },
         ]
     track.set(keys)
+
+    // the loader's island lands on this one: the mark's centre and height on screen at local 0
+    // (top-down, after the print-on). Height = one mark unit (the SVG mark's viewBox height).
+    const root = document.documentElement.style
+    const tanI = Math.tan((FI / 2) * DEG)
+    root.setProperty('--hark-isl-x', `${(((I.sx + 1) / 2) * w).toFixed(1)}px`)
+    root.setProperty('--hark-isl-y', `${(((1 - I.sy) / 2) * h).toFixed(1)}px`)
+    const pxPerUnit = h / (2 * Math.exp(I.ld) * tanI)
+    root.setProperty('--hark-isl-h', `${(S * pxPerUnit).toFixed(1)}px`)
+    marginScale = mobile ? 1 : clamp(42 / pxPerUnit, 1, 1.3)
   }
 
   const liftAt = (local: number) => ease.inOutCubic(segment(local, 0.1, 0.5))
@@ -213,7 +238,7 @@ export default function create(): Chapter {
     // a slow, small idle orbit in the payoff (a drone holding station). Reduced motion: none. Motion off:
     // frame.time holds, so the orbit holds exactly where it is (no snap back when the switch flips)
     const calm = reduced ? 0 : 1
-    const pay = smoothstep(0.62, 0.72, local) * (1 - smoothstep(0.93, 1, local)) * calm
+    const pay = smoothstep(0.58, 0.68, local) * (1 - smoothstep(0.93, 1, local)) * calm
     const t = frame.time
     const az = (val[AZ] + Math.sin(t * 0.11) * 2.4 * pay) * DEG
     const elv = (val[EL] + Math.sin(t * 0.083 + 1.2) * 0.8 * pay) * DEG
@@ -279,8 +304,7 @@ export default function create(): Chapter {
       for (const c of C.tints) el('i', '', undefined, ramp).style.background = c
       const ticks = el('div', 'hr-ramp-ticks hud-coord', undefined, legend)
       for (const v of ['0', '40', '80', '120 m']) el('span', '', v, ticks)
-      el('div', 'hud-rule hr-scale', undefined, legend)
-      el('p', 'hud-coord', 'Contour interval 20 m · 1:24 000', legend)
+      // (the scale and contour interval are lettered once, in the sheet's margin; the chrome owns the scale bar)
 
       payoff = el('div', 'hr-payoff', undefined, ctx.stage)
       title = rise(el('h1', 'hud-title hr-title', undefined, payoff), 'Make the internet <em>listen.</em>')
@@ -307,10 +331,16 @@ export default function create(): Chapter {
         layoutDirty = true
       })
 
-      // ---------------- land
-      land = buildLand()
+      // ---------------- land (the hero is the first markField() caller: its resolution sticks). The
+      // mark's distance field, then the land built on it, each in its own task
+      const res = mobile ? 384 : 640
       await nextFrame()
-      const geoIsland = terrainGeometry({
+      markField({ res })
+      await nextFrame()
+      land = buildLand(res)
+      await nextFrame()
+      // sampled in ~8 ms slices so the loader keeps animating
+      const geoIsland = await terrainGeometryAsync({
         width: 2 * HALF,
         depth: 2 * HALF,
         seg: mobile ? 160 : 300,
@@ -320,7 +350,7 @@ export default function create(): Chapter {
         cz: Z0,
       })
       await nextFrame()
-      const geoSea = terrainGeometry({
+      const geoSea = await terrainGeometryAsync({
         width: 76,
         depth: 76,
         seg: mobile ? 76 : 120,
@@ -370,6 +400,8 @@ export default function create(): Chapter {
       // island sheet) the fine one always wins the depth test, even far away on phones
       sea.position.y = -0.02
       const island = new THREE.Mesh(geoIsland, islMat)
+      // drawn before the sea: the sea's fragments under the island fail early-z instead of shading twice
+      island.renderOrder = -2
       group.add(sea, island)
 
       // ---------------- the sheet: neatline + graduated border (8 bars a side = half a graticule cell each)
@@ -379,13 +411,12 @@ export default function create(): Chapter {
       group.add(frame.mesh)
 
       // ---------------- survey lines along both crests, the summit benchmark
-      const headGeo = new THREE.SphereGeometry(0.075, 16, 10)
+      // phones see the massif from further off: wider ribbons hold ≥ 2.5 CSS px in the payoff
+      const headGeo = new THREE.SphereGeometry(mobile ? 0.11 : 0.075, 16, 10)
       const headMat = new THREE.MeshBasicMaterial({ color: C.signal, toneMapped: false })
       for (const crest of [land.crestA, land.crestB]) {
         const pts = drapeFull(crest, land, 0.05, 0.07)
-        const r = routeRibbon(pts, { width: 0.075, dash: 0.2, gap: 0.13, color: C.signal })
-        // the kit's ribbon winds its triangles facing down: draw both sides so it shows from above
-        ;(r.mesh.material as THREE.ShaderMaterial).side = THREE.DoubleSide
+        const r = routeRibbon(pts, mobile ? { width: 0.14, dash: 0.28, gap: 0.17, color: C.signal } : { width: 0.075, dash: 0.2, gap: 0.13, color: C.signal })
         routes.push(r)
         group.add(r.mesh)
         const cum = [0]
@@ -408,7 +439,10 @@ export default function create(): Chapter {
       // ---------------- lettering (after the faces load, so the canvas metrics are right)
       await Promise.race([ensureFonts(), new Promise(r => setTimeout(r, 2500))])
       const k = mobile ? 1.9 : 1
-      const [wx, wz] = toWorld(-0.335, -0.35)
+      // desktop: along the channel between the SW hook and its islet; phones letter the sheet ~1.9× larger,
+      // so the name moves out into the open water south-east of the island, clear of every ring
+      const [wx, wz] = mobile ? toWorld(0.46, -0.6) : toWorld(-0.335, -0.35)
+      // a knockout in the sea's own colour keeps the water-lining rings from running through the letters
       const water = flatLabel('Hark Sound', {
         font: 'display',
         italic: true,
@@ -416,10 +450,11 @@ export default function create(): Chapter {
         weight: 400,
         color: C.coast,
         tracking: 0.14,
-        halo: null,
+        halo: '#ccdddf',
+        haloWidth: 0.2,
         height: 0.8,
         anchor: 0.5,
-        rot: 0.62,
+        rot: mobile ? 0 : 0.62,
       })
       water.position.set(wx, 0.006, wz)
       water.userData.topScale = mobile ? 1.9 : 1
@@ -433,10 +468,12 @@ export default function create(): Chapter {
         m.position.set(x, 0.005, z)
         sheetLabels.push(m)
       }
-      addSheet('Sheet 01 — Relief', X0 - HALF - 0.45, yT, 0, true)
+      // marginalia, each said once: sheet name, (desktop) title, the studio's coordinates (the chrome has
+      // none), the scale and (desktop) the contour interval
+      addSheet(SHEET.name(1, 'Relief'), X0 - HALF - 0.45, yT, 0, true)
       addSheet('Hark Digital Design · Survey of the studio', X0 + HALF + 0.45, yT, 1, !mobile)
-      addSheet(mobile ? MICROCOPY.coordinates : `${MICROCOPY.coordinates} · Scale 1:24 000`, X0 - HALF - 0.45, yM, 0, true)
-      addSheet('Contour interval 20 m · Soundings in metres', X0 + HALF + 0.45, yM, 1, !mobile)
+      addSheet(MICROCOPY.coordinates, X0 - HALF - 0.45, yM, 0, true)
+      addSheet(mobile ? `Scale ${SHEET.scale}` : `Scale ${SHEET.scale} · Contour interval 20 m`, X0 + HALF + 0.45, yM, 1, true)
       for (const m of [...seaLabels, ...sheetLabels]) group.add(m)
       // fonts that arrive later: redraw once with the real faces
       document.fonts?.ready.then(() => {
@@ -481,12 +518,16 @@ export default function create(): Chapter {
         const mat = m.material as THREE.MeshBasicMaterial
         mat.opacity = letters * sheetOn
         m.visible = mat.opacity > 0.01
+        m.scale.setScalar(marginScale)
       }
       // lettering sized for the flat sheet on small screens eases back to its chart size once oblique
       const oblique = smoothstep(75, 40, camEl)
+      // phones: the water name belongs to the flat sheet (out in the open water it would sit on the
+      // screen's edge in the oblique payoff), so it lets go as the drone tilts
+      const seaKeep = mobile ? 1 - smoothstep(0.25, 0.7, oblique) : 1
       for (const m of seaLabels) {
         const mat = m.material as THREE.MeshBasicMaterial
-        mat.opacity = smoothstep(0.9, 1.7, since) * (1 - smoothstep(0.93, 0.97, local)) * 0.9
+        mat.opacity = smoothstep(0.9, 1.7, since) * (1 - smoothstep(0.93, 0.97, local)) * 0.9 * seaKeep
         m.visible = mat.opacity > 0.01
         m.position.y = 0.006
         m.scale.setScalar(lerp((m.userData.topScale as number) ?? 1, 1, oblique))
@@ -536,8 +577,8 @@ export default function create(): Chapter {
       if (since > 0 || reduced) intro.classList.add('is-in')
       reveal(intro, 1 - smoothstep(0.075, 0.11, local))
       reveal(legend, smoothstep(1.1, 1.9, since) * (1 - smoothstep(0.47, 0.53, local)), 0)
-      reveal(payoff, smoothstep(0.6, 0.66, local) * (1 - smoothstep(0.9, 0.935, local)))
-      setRise(title, local > 0.6 && local < 0.935)
+      reveal(payoff, smoothstep(0.54, 0.6, local) * (1 - smoothstep(0.9, 0.935, local)))
+      setRise(title, local > 0.545 && local < 0.935)
     },
 
     camera(_local: number, _frame: Frame, out: CameraPose) {

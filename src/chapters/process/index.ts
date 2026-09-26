@@ -1,13 +1,13 @@
 import * as THREE from 'three'
 import type { CameraPose, Chapter, ChapterContext, Frame } from '../../core/types'
 import { el, rise, setRise, reveal } from '../../core/dom'
-import { PROCESS, STATS } from '../../content'
+import { PROCESS, SHEET, STATS } from '../../content'
 import { clamp, ease, lerp, segment, smoothstep, window01 } from '../../core/math'
 import { nextFrame } from '../../core/yield'
 import { C, chartMaterial, ensureFonts, mapLabel, marker, routeRibbon, type ChartMaterial } from '../../kit/chart'
-import { terrainGeometry, drape, type TerrainData } from '../../kit/terrain'
+import { terrainGeometryAsync, drape, type TerrainData } from '../../kit/terrain'
 import { mulberry32 } from '../../kit/noise'
-import { makeLand, INTERVAL, METRES, POI, BOUNDS, type V2 } from './land'
+import { makeLand, INTERVAL, METERS, POI, BOUNDS, type V2 } from './land'
 import { buildField, contourLoops, boardGeometry, drawTimeTexture, loopLength, type DrawTime, type Field, type Loop } from './field'
 import { draftMaterial, boardMaterial, ringMaterial, station, type BoardMaterial, type DraftMaterial } from './model'
 import './process.css'
@@ -53,7 +53,7 @@ const ANCHORS = [0.2, 0.372, 0.548, 0.748]
 const STATS_AT = 0.875
 const HEAD = [0.045, 0.955] as const
 const CARD = [0.1, 0.785] as const
-const TILES = [0.8, 0.955] as const
+const TILES = [0.825, 0.955] as const
 
 const FRONT = [0.104, 0.236] as const
 const FRONT_R = 10.8
@@ -76,7 +76,7 @@ const SHOW = [STATS[0], STATS[2], STATS[1]]
 const KEYS = ['layers', 'route', 'marker']
 
 /** the chart sheet (terrain) rectangle */
-const SHEET = { w: 34, d: 26, cx: 1.2, cz: -0.6 }
+const PAPER = { w: 34, d: 26, cx: 1.2, cz: -0.6 }
 /** the field's extent: the island, its water-lining and a margin of flat sea */
 const FIELD = { x0: -10, x1: 12, z0: -9, z1: 7.8 }
 /** tint ramp range of the chart and the boards */
@@ -91,7 +91,7 @@ const _f = new THREE.Vector3()
 const _r = new THREE.Vector3()
 const _u = new THREE.Vector3()
 
-/** [t, azimuth°, elevation°, distance, screen x, screen y, centre y] (az 0 = from the south, + from the east) */
+/** [t, azimuth°, elevation°, distance, screen x, screen y, center y] (az 0 = from the south, + from the east) */
 type Key = [number, number, number, number, number, number, number]
 
 const WIDE: Key[] = [
@@ -105,11 +105,11 @@ const WIDE: Key[] = [
   [0.6, -22, 39, 22, 0.3, 0.0, 0.45],
   [0.69, -30, 34, 21.5, 0.3, 0.02, 0.55],
   [0.78, -35, 33, 22, 0.3, 0.02, 0.5],
-  [0.87, -28, 40, 27, 0.18, 0.16, 0.4],
+  [0.85, -28, 40, 27, 0.18, 0.16, 0.4],
   [0.95, -25, 42, 28, 0.18, 0.16, 0.4],
   [1.0, -23, 46, 30, 0.18, 0.18, 0.4],
 ]
-/** portrait: distance is a multiple of the fit distance; screen y is an offset from the band's centre */
+/** portrait: distance is a multiple of the fit distance; screen y is an offset from the band's center */
 const TALL: Key[] = [
   [0.0, -10, 78, 1.15, 0, 0.02, 0],
   [0.1, -6, 66, 1.0, 0, 0, 0],
@@ -121,11 +121,11 @@ const TALL: Key[] = [
   [0.6, -22, 42, 0.99, 0, -0.01, 0.45],
   [0.69, -30, 36, 0.98, 0, -0.01, 0.55],
   [0.78, -34, 35, 0.99, 0, 0, 0.5],
-  [0.87, -28, 42, 1.0, 0, 0, 0.4],
+  [0.85, -28, 42, 1.0, 0, 0, 0.4],
   [0.95, -25, 44, 1.02, 0, 0, 0.4],
   [1.0, -23, 48, 1.08, 0, 0.02, 0.4],
 ]
-/** the island's centre (main island + islet) */
+/** the island's center (main island + islet) */
 const CX = 1.3
 const CZ = -0.7
 /** half the island's width to keep in frame on narrow screens (world units, with a margin) */
@@ -133,40 +133,170 @@ const HALF_W = 9.4
 
 const smoother = (t: number) => t * t * t * (t * (t * 6 - 15) + 10)
 
+/** keys from here on frame the finished sheet above the results legend */
+const RESULTS = 0.84
+
 /**
- * The free band between the headline and the copy below it (fractions of
- * the stage height, measured from the DOM): on portrait screens the island is
- * centred in it and kept inside it.
+ * The free space around the copy, measured from the DOM (fractions of the
+ * stage). Portrait: the band between the headline and the copy below it,
+ * where the island is centered. While the results legend is up, two
+ * rectangles above it ([x0, y0, x1, y1], y down), one beside the headline
+ * and one below it: the whole relief is kept inside one of them (landscape:
+ * whichever holds it larger; portrait: below).
  */
 interface Band {
   top: number
   card: number
   stats: number
+  aside: Float64Array
+  below: Float64Array
+  /** bumped on every measure (invalidates the fitted keys) */
+  v: number
 }
 
-function place(k: Key, aspect: number, fov: number, tall: boolean, band: Band, pos: THREE.Vector3, tgt: THREE.Vector3) {
+/**
+ * The finished relief's extreme points (world x, y, z: the coast, the high
+ * ground and the summit marker's head) and, per camera key, the fitted
+ * distance and pan (NaN = not yet fitted for this layout).
+ */
+interface Fit {
+  pts: Float32Array
+  n: number
+  cam: Float32Array
+  cache: Float64Array
+  aspect: number
+  tanH: number
+  v: number
+}
+
+const _b = new THREE.Vector3()
+/** scratch results of span(): the feasible camera offsets on one axis */
+let spanLo = 0
+let spanHi = 0
+
+/**
+ * Along one screen axis, the camera offsets that keep every point inside
+ * [v0, v1] (NDC) at distance D: point j lands at (p_j − off) / (s·(D + z_j)).
+ * Feasible when spanLo ≤ spanHi.
+ */
+function span(q: Float32Array, n: number, axis: number, D: number, s: number, v0: number, v1: number) {
+  let lo = -Infinity
+  let hi = Infinity
+  for (let j = 0; j < n; j++) {
+    const p = q[j * 3 + axis]
+    const w = s * (D + q[j * 3 + 2])
+    const a = p - v1 * w
+    const b = p - v0 * w
+    if (a > lo) lo = a
+    if (b < hi) hi = b
+  }
+  spanLo = lo
+  spanHi = hi
+}
+
+function fits(q: Float32Array, n: number, D: number, A: number, tanH: number, x0: number, x1: number, y0: number, y1: number) {
+  span(q, n, 0, D, A, x0, x1)
+  if (spanLo > spanHi) return false
+  span(q, n, 1, D, tanH, y0, y1)
+  return spanLo <= spanHi
+}
+
+/**
+ * The results keys: the smallest distance at which the whole relief fits a
+ * free rectangle (landscape: beside or below the headline, whichever holds
+ * it larger; portrait: below it), never nearer than the key's own `own`;
+ * then the key's own screen offset (sx, sy), nudged just enough to keep the
+ * relief inside. Writes fit.cache[i*3 ..] = distance, pan x, pan y.
+ */
+function fitKey(i: number, own: number, sx: number, sy: number, aspect: number, tanH: number, tall: boolean, band: Band, fit: Fit) {
+  const { pts, n, cam: q, cache } = fit
+  const A = tanH * aspect
+  let near = 0
+  for (let j = 0; j < n; j++) {
+    const dx = pts[j * 3] - _c.x
+    const dy = pts[j * 3 + 1] - _c.y
+    const dz = pts[j * 3 + 2] - _c.z
+    q[j * 3] = dx * _r.x + dy * _r.y + dz * _r.z
+    q[j * 3 + 1] = dx * _u.x + dy * _u.y + dz * _u.z
+    q[j * 3 + 2] = dx * _f.x + dy * _f.y + dz * _f.z
+    near = Math.max(near, 1 - q[j * 3 + 2])
+  }
+  let best = Infinity
+  let pick: Float64Array | null = null
+  for (let ri = tall ? 1 : 0; ri < 2; ri++) {
+    const R = ri ? band.below : band.aside
+    const x0 = 2 * R[0] - 1
+    const x1 = 2 * R[2] - 1
+    const y0 = 1 - 2 * R[3]
+    const y1 = 1 - 2 * R[1]
+    if (x1 - x0 < 0.2 || y1 - y0 < 0.2) continue
+    let lo = near
+    let hi = 400
+    if (!fits(q, n, hi, A, tanH, x0, x1, y0, y1)) continue
+    for (let it = 0; it < 28; it++) {
+      const mid = (lo + hi) / 2
+      if (fits(q, n, mid, A, tanH, x0, x1, y0, y1)) hi = mid
+      else lo = mid
+    }
+    if (hi < best) {
+      best = hi
+      pick = R
+    }
+  }
+  const o = i * 3
+  const D = pick ? Math.max(best, own) : own
+  let X = -sx * A * D
+  let Y = -sy * tanH * D
+  if (pick) {
+    span(q, n, 0, D, A, 2 * pick[0] - 1, 2 * pick[2] - 1)
+    X = clamp(X, spanLo, spanHi)
+    span(q, n, 1, D, tanH, 1 - 2 * pick[3], 1 - 2 * pick[1])
+    Y = clamp(Y, spanLo, spanHi)
+  }
+  cache[o] = D
+  cache[o + 1] = X
+  cache[o + 2] = Y
+}
+
+function place(k: Key, i: number, aspect: number, fov: number, tall: boolean, band: Band, fit: Fit, pos: THREE.Vector3, tgt: THREE.Vector3) {
   const tanH = Math.tan((fov * DEG) / 2)
   const a = k[1] * DEG
   const e = k[2] * DEG
+  _c.set(CX, k[6], CZ)
+  // the view direction: from the island's center out to the camera
+  _b.set(Math.sin(a) * Math.cos(e), Math.sin(e), Math.cos(a) * Math.cos(e))
+  _f.copy(_b).negate()
+  _r.crossVectors(_f, UP).normalize()
+  _u.crossVectors(_r, _f)
   let d = k[3]
   let sy = k[5]
   if (tall) {
-    const bottom = k[0] >= 0.85 ? band.stats : band.card
+    const bottom = k[0] >= RESULTS ? band.stats : band.card
     const f = Math.max(0.14, bottom - band.top)
     sy += 1 - (band.top + bottom)
     // the island's projected height (its depth foreshortened, plus the relief) fits the band; its width fits the screen
     const vert = 10.5 * Math.sin(e) + 2.2 * Math.cos(e)
     d *= Math.max(HALF_W / (tanH * aspect), vert / (2 * tanH * f))
   } else d *= Math.pow(clamp(1.6 / aspect, 1, 1.7), 0.92)
-  _c.set(CX, k[6], CZ)
-  pos.set(_c.x + Math.sin(a) * Math.cos(e) * d, _c.y + Math.sin(e) * d, _c.z + Math.cos(a) * Math.cos(e) * d)
-  _f.subVectors(_c, pos).normalize()
-  _r.crossVectors(_f, UP).normalize()
-  _u.crossVectors(_r, _f)
-  const halfH = tanH * d
-  // pan so the centre lands at screen (sx, sy)
-  tgt.copy(_c).addScaledVector(_r, -k[4] * halfH * aspect).addScaledVector(_u, -sy * halfH)
-  pos.addScaledVector(_r, -k[4] * halfH * aspect).addScaledVector(_u, -sy * halfH)
+  // pan so the center lands at screen (sx, sy)
+  let px = -k[4] * tanH * d * aspect
+  let py = -sy * tanH * d
+  if (k[0] >= RESULTS && fit.n > 0) {
+    // the results: the whole relief clears the legend and the headline
+    if (fit.aspect !== aspect || fit.tanH !== tanH || fit.v !== band.v) {
+      fit.cache.fill(NaN)
+      fit.aspect = aspect
+      fit.tanH = tanH
+      fit.v = band.v
+    }
+    const o = i * 3
+    if (Number.isNaN(fit.cache[o])) fitKey(i, d, k[4], sy, aspect, tanH, tall, band, fit)
+    d = fit.cache[o]
+    px = fit.cache[o + 1]
+    py = fit.cache[o + 2]
+  }
+  tgt.copy(_c).addScaledVector(_r, px).addScaledVector(_u, py)
+  pos.copy(tgt).addScaledVector(_b, d)
 }
 
 const _pa = new THREE.Vector3()
@@ -174,14 +304,14 @@ const _ta = new THREE.Vector3()
 const _pb = new THREE.Vector3()
 const _tb = new THREE.Vector3()
 
-function sampleKeys(keys: Key[], local: number, aspect: number, fov: number, tall: boolean, band: Band, pos: THREE.Vector3, tgt: THREE.Vector3) {
+function sampleKeys(keys: Key[], local: number, aspect: number, fov: number, tall: boolean, band: Band, fit: Fit, pos: THREE.Vector3, tgt: THREE.Vector3) {
   let i = 0
   while (i < keys.length - 2 && local > keys[i + 1][0]) i++
   const a = keys[i]
   const b = keys[i + 1]
   const e = smoother(segment(local, a[0], b[0]))
-  place(a, aspect, fov, tall, band, _pa, _ta)
-  place(b, aspect, fov, tall, band, _pb, _tb)
+  place(a, i, aspect, fov, tall, band, fit, _pa, _ta)
+  place(b, i + 1, aspect, fov, tall, band, fit, _pb, _tb)
   pos.lerpVectors(_pa, _pb, e)
   tgt.lerpVectors(_ta, _tb, e)
 }
@@ -269,8 +399,16 @@ export default function create(): Chapter {
 
   const tmpPos = new THREE.Vector3()
   const tmpTgt = new THREE.Vector3()
-  /** the portrait band, measured on resize (defaults until the first layout) */
-  const band: Band = { top: 0.2, card: 0.58, stats: 0.55 }
+  /** the free space around the copy, measured on resize (defaults until the first layout) */
+  const band: Band = {
+    top: 0.2,
+    card: 0.58,
+    stats: 0.55,
+    aside: Float64Array.of(0.4, 0.12, 0.96, 0.64),
+    below: Float64Array.of(0.04, 0.34, 0.96, 0.64),
+    v: 0,
+  }
+  const fit: Fit = { pts: new Float32Array(0), n: 0, cam: new Float32Array(0), cache: new Float64Array(WIDE.length * 3), aspect: 0, tanH: 0, v: -1 }
 
   return {
     id: 'process',
@@ -280,18 +418,18 @@ export default function create(): Chapter {
     async init(ctx: ChapterContext) {
       const mobile = ctx.mobile
       const height = makeLand()
-      field = await buildField(height, FIELD, mobile ? 0.075 : 0.05, 4)
+      field = await buildField(height, FIELD, mobile ? 0.075 : 0.05)
       await nextFrame()
 
       // ---- the chart sheet
-      const geo = terrainGeometry({
-        width: SHEET.w,
-        depth: SHEET.d,
+      const geo = await terrainGeometryAsync({
+        width: PAPER.w,
+        depth: PAPER.d,
         seg: mobile ? 130 : 200,
         detail: mobile ? 2 : 3,
         height: field.sample,
-        cx: SHEET.cx,
-        cz: SHEET.cz,
+        cx: PAPER.cx,
+        cz: PAPER.cz,
       })
       const td = geo.userData as TerrainData
       chart = chartMaterial(ctx.world, {
@@ -325,10 +463,10 @@ export default function create(): Chapter {
       }
       const dt: DrawTime = drawTimeTexture(levels, BOUNDS, mobile ? 0.06 : 0.045)
       draft = draftMaterial(ctx.world, td, dt, INTERVAL)
-      const dg = new THREE.PlaneGeometry(SHEET.w, SHEET.d)
+      const dg = new THREE.PlaneGeometry(PAPER.w, PAPER.d)
       dg.rotateX(-Math.PI / 2)
       draftMesh = new THREE.Mesh(dg, draft.material)
-      draftMesh.position.set(SHEET.cx, 0.004, SHEET.cz)
+      draftMesh.position.set(PAPER.cx, 0.004, PAPER.cz)
       draftMesh.renderOrder = 1
       group.add(draftMesh)
       await nextFrame()
@@ -467,7 +605,7 @@ export default function create(): Chapter {
       await ensureFonts()
       named.forEach((_, n) => {
         const i = namedAt[n]
-        const mesh = mapLabel(String(Math.round(ptH[i] * METRES)), {
+        const mesh = mapLabel(String(Math.round(ptH[i] * METERS)), {
           font: 'mono',
           size: 30,
           weight: 600,
@@ -511,7 +649,7 @@ export default function create(): Chapter {
           const gx = field.sample(x + 0.05, z) - field.sample(x - 0.05, z)
           const gz = field.sample(x, z + 0.05) - field.sample(x, z - 0.05)
           if (-Math.sin(th) * gx - Math.cos(th) * gz < 0) th += Math.PI
-          const mesh = mapLabel(String(Math.round(k * INTERVAL * METRES)), {
+          const mesh = mapLabel(String(Math.round(k * INTERVAL * METERS)), {
             font: 'mono',
             size: 26,
             weight: 600,
@@ -530,6 +668,8 @@ export default function create(): Chapter {
         }
       }
 
+      await nextFrame()
+
       // ---- the route to the summit, and its revision along the ridge
       const [smx, smz] = [ptX[namedAt[0]], ptZ[namedAt[0]]]
       peakAt.set(smx, smz)
@@ -541,13 +681,36 @@ export default function create(): Chapter {
       routeB = routeRibbon(drape(pathB, field.sample, { offset: 0.04, step: 0.1 }), { width: 0.085, dash: 0.2, gap: 0.12 })
       routeA.mesh.renderOrder = 12
       routeB.mesh.renderOrder = 13
-      // the kit's ribbon winds its triangles facing down: draw both sides so it shows from above
-      ;(routeA.mesh.material as THREE.Material).side = THREE.DoubleSide
-      ;(routeB.mesh.material as THREE.Material).side = THREE.DoubleSide
       group.add(routeA.mesh, routeB.mesh)
       peak = marker({ color: C.signal, height: 0.85, radius: 0.16 })
       peak.group.position.set(smx, peakH, smz)
       group.add(peak.group)
+
+      // ---- the finished relief's extreme points, for the landscape results fit:
+      // the coast every ~0.3 units, the high ground on a coarse grid, the marker's head
+      const fp: number[] = []
+      for (const l of levels[0] ?? []) {
+        const n = l.length / 2
+        let run = Infinity
+        for (let i = 0; i < n; i++) {
+          const j = (i + 1) % n
+          if (run >= 0.3) {
+            fp.push(l[i * 2], 0, l[i * 2 + 1])
+            run = 0
+          }
+          run += Math.hypot(l[j * 2] - l[i * 2], l[j * 2 + 1] - l[i * 2 + 1])
+        }
+      }
+      for (let z = BOUNDS.z0; z <= BOUNDS.z1; z += 0.5) {
+        for (let x = BOUNDS.x0; x <= BOUNDS.x1; x += 0.5) {
+          const h = field.sample(x, z)
+          if (h > 0.5) fp.push(x, h, z)
+        }
+      }
+      fp.push(smx, peakH + 1.05, smz)
+      fit.pts = Float32Array.from(fp)
+      fit.n = fp.length / 3
+      fit.cam = new Float32Array(fp.length)
 
       // ---- DOM
       const stage = ctx.stage
@@ -582,7 +745,7 @@ export default function create(): Chapter {
       statsEl = el('div', 'pr-stats hud-panel', undefined, stage)
       const cap = el('div', 'pr-cap', undefined, statsEl)
       el('span', 'hud-label', 'Legend', cap)
-      el('span', 'hud-coord', 'Sheet 6 · Layers', cap)
+      el('span', 'hud-coord', SHEET.name(6, 'Layers'), cap)
       const grid = el('div', 'pr-grid', undefined, statsEl)
       SHOW.forEach((s, i) => {
         const t = el('div', 'pr-tile', undefined, grid)
@@ -596,13 +759,32 @@ export default function create(): Chapter {
       reveal(head, 0, 0)
       reveal(cardEl, 0, 0)
       reveal(statsEl, 0, 0)
-      // measure the free band between the headline and the copy (layout only: opacity never changes it)
+      // measure the free space around the copy (layout only: opacity never changes it)
+      const words = headline.querySelectorAll<HTMLElement>('.rise-w')
       const measure = () => {
+        const W = stage.clientWidth
         const H = stage.clientHeight
-        if (H < 10) return
+        if (H < 10 || W < 10) return
         band.top = (head.offsetTop + head.offsetHeight) / H
         band.card = cardEl.offsetTop / H
         band.stats = statsEl.offsetTop / H
+        // the headline's inked extent (its words, not its box)
+        const left = head.getBoundingClientRect().left
+        let right = 0
+        words.forEach(w => (right = Math.max(right, w.getBoundingClientRect().right - left)))
+        const inkR = head.offsetLeft + (right || head.offsetWidth)
+        const g = head.offsetLeft
+        const m = clamp(0.03 * H, 12, 28)
+        const floor = (statsEl.offsetTop - m) / H
+        band.aside[0] = (inkR + m * 1.5) / W
+        band.aside[1] = head.offsetTop / H
+        band.aside[2] = (W - g) / W
+        band.aside[3] = floor
+        band.below[0] = g / W
+        band.below[1] = (head.offsetTop + head.offsetHeight + m) / H
+        band.below[2] = (W - g) / W
+        band.below[3] = floor
+        band.v++
       }
       if (typeof ResizeObserver !== 'undefined') {
         const ro = new ResizeObserver(measure)
@@ -612,6 +794,8 @@ export default function create(): Chapter {
         ro.observe(statsEl)
       }
       measure()
+      // a late webfont can change the headline's width without resizing its box
+      document.fonts?.ready.then(measure).catch(() => {})
       ready = true
     },
 
@@ -805,7 +989,7 @@ export default function create(): Chapter {
       const aspect = frame.width / Math.max(1, frame.height)
       const tall = aspect < 0.9
       const fov = tall ? 42 : 36
-      sampleKeys(tall ? TALL : WIDE, local, aspect, fov, tall, band, tmpPos, tmpTgt)
+      sampleKeys(tall ? TALL : WIDE, local, aspect, fov, tall, band, fit, tmpPos, tmpTgt)
       // a slow drone drift (idle only)
       if (!frame.reducedMotion && !frame.still) {
         const t = frame.time

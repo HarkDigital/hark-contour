@@ -65,10 +65,19 @@
   gap: 8px;
 }
 .stage-shield .sh-legend-title {
-  margin: 0 0 2px;
+  margin: 0;
   color: var(--fg);
   font-size: 10.5px;
   letter-spacing: 0.14em;
+}
+/* the chart's own title, lettered like a map name */
+.stage-shield .sh-legend-sub {
+  margin: -4px 0 3px;
+  font-family: var(--font-display);
+  font-style: italic;
+  font-size: 15px;
+  line-height: 1.2;
+  color: rgba(43, 37, 33, 0.84);
 }
 .stage-shield .sh-keys {
   margin: 0;

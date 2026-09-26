@@ -2,6 +2,7 @@ import * as THREE from 'three'
 import { logoGeometry } from '../../logo/logo'
 import { FONTS, ensureFonts } from '../../kit/chart'
 import { BRAND } from '../../content'
+import { nextFrame } from '../../core/yield'
 
 /*
  * THE BENCHMARK — a brass survey disc set into the chart: the one true 3D prop
@@ -65,7 +66,7 @@ function brassEnvironment(renderer: THREE.WebGLRenderer): THREE.WebGLRenderTarge
           vec3 hor = vec3(0.62, 0.52, 0.38);
           vec3 low = vec3(0.12, 0.085, 0.05);
           vec3 c = mix(hor, top, smoothstep(0.0, 0.85, y));
-          c = mix(c, low, smoothstep(0.02, -0.35, y));
+          c = mix(c, low, 1.0 - smoothstep(-0.35, 0.02, y));
           gl_FragColor = vec4(c, 1.0);
         }
       `,
@@ -90,6 +91,38 @@ function brassEnvironment(renderer: THREE.WebGLRenderer): THREE.WebGLRenderTarge
   ;(win.material as THREE.Material).dispose()
   ;(card.material as THREE.Material).dispose()
   return rt
+}
+
+/**
+ * A soft shoulder on the brass's lit colour (NoToneMapping): values below
+ * the knee pass untouched, highlights roll off toward LIN_CEIL (≈ 0.945 on
+ * screen, after the sRGB encode), so a glint on the rim or the mark's bevel
+ * never clips to white.
+ */
+const KNEE = 0.6
+const LIN_CEIL = 0.88
+function softHighlights(mat: THREE.MeshStandardMaterial) {
+  mat.onBeforeCompile = shader => {
+    shader.fragmentShader = shader.fragmentShader.replace(
+      '#include <tonemapping_fragment>',
+      /* glsl */ `{
+        vec3 hkX = max(gl_FragColor.rgb, vec3(0.0));
+        vec3 hkO = max(hkX - ${KNEE.toFixed(3)}, vec3(0.0));
+        gl_FragColor.rgb = min(hkX, vec3(${KNEE.toFixed(3)})) + ${(LIN_CEIL - KNEE).toFixed(3)} * (vec3(1.0) - exp(-hkO / ${(LIN_CEIL - KNEE).toFixed(3)}));
+      }
+      #include <tonemapping_fragment>`,
+    )
+  }
+  mat.customProgramCacheKey = () => 'hark-brass-knee'
+}
+
+/** After the texture's next upload, let the canvas go (the GPU copy is all that's drawn). */
+export function releaseOnUpload(tex: THREE.Texture) {
+  tex.onUpdate = () => {
+    tex.onUpdate = null
+    const c = tex.image as HTMLCanvasElement
+    c.width = c.height = 1
+  }
 }
 
 /** The rounded rim + skirt, as a lathe profile (r, y). */
@@ -156,10 +189,12 @@ function drawFace(c: HTMLCanvasElement) {
   x.fillStyle = '#ffffff'
   x.fillRect(0, 0, S, S)
 
-  // turned-metal rings and a little age toward the rim
-  for (let r = 6; r < R; r += 3) {
-    x.strokeStyle = `rgba(120, 88, 40, ${0.035 + 0.03 * Math.abs(Math.sin(r * 0.37))})`
-    x.lineWidth = 1
+  // turned-metal rings and a little age toward the rim (spacing scales with
+  // the canvas, so the face reads the same at every device size)
+  const k = S / 2048
+  x.lineWidth = Math.max(0.5, k)
+  for (let i = 0, r = 6 * k; r < R; i++, r += 3 * k) {
+    x.strokeStyle = `rgba(120, 88, 40, ${0.035 + 0.03 * Math.abs(Math.sin((6 + 3 * i) * 0.37))})`
     x.beginPath()
     x.arc(cx, cy, r, 0, Math.PI * 2)
     x.stroke()
@@ -215,20 +250,30 @@ function drawFace(c: HTMLCanvasElement) {
   tri(Math.PI)
 }
 
-export function buildBenchmark(renderer: THREE.WebGLRenderer, mobile: boolean): Benchmark {
+/**
+ * @param fontsFinal the web fonts were already in when this ran, so the face
+ * is final: its canvas is released after the first upload. Otherwise it's
+ * released after redraw() (the fonts-ready pass).
+ */
+export async function buildBenchmark(renderer: THREE.WebGLRenderer, mobile: boolean, fontsFinal = true): Promise<Benchmark> {
   const group = new THREE.Group()
   const spin = new THREE.Group()
   group.add(spin)
 
+  // built in three frame-sized steps (environment, face, mark): no long task on phones
   const env = brassEnvironment(renderer)
+  await nextFrame()
 
-  // the engraving
+  // the engraving: sized to what the face ever covers on screen (≈ 860 device
+  // px at 1440×900 @2), smaller on phones
+  const FACE_PX = mobile ? 768 : 1024
   const canvas = document.createElement('canvas')
-  canvas.width = canvas.height = mobile ? 1024 : 2048
+  canvas.width = canvas.height = FACE_PX
   drawFace(canvas)
   const faceTex = new THREE.CanvasTexture(canvas)
   faceTex.colorSpace = THREE.SRGBColorSpace
   faceTex.anisotropy = Math.min(8, renderer.capabilities.getMaxAnisotropy())
+  if (fontsFinal) releaseOnUpload(faceTex)
 
   const brassColor = new THREE.Color('#b59c68')
   const brass = new THREE.MeshStandardMaterial({
@@ -255,6 +300,7 @@ export function buildBenchmark(renderer: THREE.WebGLRenderer, mobile: boolean): 
     envMap: env.texture,
     envMapIntensity: 0.95,
   })
+  for (const m of [brass, faceMat, markMat]) softHighlights(m)
 
   // the domed face (planar UVs: canvas top = north = -z)
   const face = new THREE.RingGeometry(0, FACE_R, 160, 24)
@@ -273,8 +319,9 @@ export function buildBenchmark(renderer: THREE.WebGLRenderer, mobile: boolean): 
   const rimMesh = new THREE.Mesh(rim, brass)
   spin.add(rimMesh)
 
+  await nextFrame()
   // the Hark mark, embossed at the centre (fits inside the inner engraved circle)
-  const mg = logoGeometry({ depth: 0.05, bevelSize: 0.01, bevelThickness: 0.014, curveSegments: 28 })
+  const mg = logoGeometry({ depth: 0.05, bevelSize: 0.01, bevelThickness: 0.014, curveSegments: mobile ? 20 : 28 })
   const mp = mg.attributes.position as THREE.BufferAttribute
   let maxR = 0
   for (let i = 0; i < mp.count; i++) maxR = Math.max(maxR, Math.hypot(mp.getX(i), mp.getY(i)))
@@ -300,6 +347,7 @@ export function buildBenchmark(renderer: THREE.WebGLRenderer, mobile: boolean): 
   sx.fillRect(0, 0, 256, 256)
   const shadowTex = new THREE.CanvasTexture(sc)
   shadowTex.colorSpace = THREE.SRGBColorSpace
+  releaseOnUpload(shadowTex)
   const shadow = new THREE.Mesh(
     new THREE.CircleGeometry(DISC_R * 1.32, 64),
     new THREE.MeshBasicMaterial({ map: shadowTex, transparent: true, depthWrite: false, toneMapped: false, fog: false }),
@@ -316,8 +364,11 @@ export function buildBenchmark(renderer: THREE.WebGLRenderer, mobile: boolean): 
     markMat,
     shadow,
     redraw() {
+      // (a released canvas is 1×1: resizing it back also clears it)
+      if (canvas.width !== FACE_PX) canvas.width = canvas.height = FACE_PX
       drawFace(canvas)
       faceTex.needsUpdate = true
+      releaseOnUpload(faceTex)
     },
     dispose() {
       env.dispose()

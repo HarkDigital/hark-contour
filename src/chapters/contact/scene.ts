@@ -1,10 +1,10 @@
 import * as THREE from 'three'
 import type { World } from '../../world/World'
 import { C, chartMaterial, labelTexture, type ChartMaterial, type LabelOptions } from '../../kit/chart'
-import { terrainGeometry, type HeightFn } from '../../kit/terrain'
+import { terrainGeometryAsync, type HeightFn } from '../../kit/terrain'
 import { simplex2, fbm } from '../../kit/noise'
 import { nextFrame } from '../../core/yield'
-import { DISC_R } from './disc'
+import { DISC_R, releaseOnUpload } from './disc'
 
 /*
  * The chart around the benchmark: a quiet knoll with a flat, round top where
@@ -212,8 +212,9 @@ const LABELS: LabelSpec[] = [
   { text: '× 164', o: { font: 'mono', weight: 500, size: 40, color: C.inkSoft }, x: 4.4, z: 6.8, rot: 0, h: 0.34 },
 ]
 
-function drapedLabel(spec: LabelSpec, height: HeightFn, uniforms: Record<string, THREE.IUniform>) {
+function drapedLabel(spec: LabelSpec, height: HeightFn, uniforms: Record<string, THREE.IUniform>, final: boolean) {
   const { texture, aspect } = labelTexture(spec.text, spec.o)
+  if (final) releaseOnUpload(texture)
   const w = spec.h * aspect
   const geo = new THREE.PlaneGeometry(w, spec.h, Math.max(4, Math.ceil(w / 0.25)), 3)
   geo.rotateX(-Math.PI / 2)
@@ -239,9 +240,14 @@ function drapedLabel(spec: LabelSpec, height: HeightFn, uniforms: Record<string,
   return m
 }
 
-export async function buildChart(world: World, mobile: boolean): Promise<ChartSet> {
+/**
+ * @param fontsFinal the web fonts were in when this ran: the lettering is
+ * final and its canvases are released after upload (else after redrawLabels)
+ */
+export async function buildChart(world: World, mobile: boolean, fontsFinal = true): Promise<ChartSet> {
   const height = makeHeight()
-  const geo = terrainGeometry({
+  // sampled in ~8 ms slices (≈ 360k samples on desktop: no long task)
+  const geo = await terrainGeometryAsync({
     width: 60,
     depth: 60,
     seg: mobile ? 130 : 200,
@@ -334,12 +340,13 @@ export async function buildChart(world: World, mobile: boolean): Promise<ChartSe
     uFogFar: world.chart.uFogFar,
     uOpacity: labelU.uOpacity,
   }
-  const labels = LABELS.map(s => drapedLabel(s, height, shared))
+  const labels = LABELS.map(s => drapedLabel(s, height, shared, fontsFinal))
   const redrawLabels = () => {
     LABELS.forEach((s, i) => {
       const mat = labels[i].material as THREE.ShaderMaterial
       const old = mat.uniforms.uMap.value as THREE.Texture
       const { texture } = labelTexture(s.text, s.o)
+      releaseOnUpload(texture)
       mat.uniforms.uMap.value = texture
       old.dispose()
     })

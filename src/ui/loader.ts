@@ -1,5 +1,7 @@
-import { BRAND, MICROCOPY } from '../content'
+import { BRAND, SHEET } from '../content'
+import { CHAPTERS } from '../chapters/index'
 import { holdInert, releaseInert } from './inert'
+import { ISLAND_VIEWBOX } from './island'
 import { islandRingCount, islandSvg, sizeIsland } from './mark'
 
 /*
@@ -12,19 +14,28 @@ import { islandRingCount, islandSvg, sizeIsland } from './mark'
  * spread outward one by one, like sound — as progress() rises
  * (stroke-dashoffset). A mono readout counts the survey: "Surveying 062 %".
  *
- * finish(): the island's rings pulse outward and become a field of contour
- * lines across the whole sheet; then the paper DRAINS, band by band from the
- * middle outward (each band snaps away whole, so the edge is always a crisp
- * contour line — the site's chapter cut, "contour flood", in reverse) to
- * reveal the scene (~0.9 s). finish() resolves as the drain begins (main.ts
- * fires 'hark:reveal', so the hero's own entrance rides it); the node
- * removes itself after.
+ * finish() is a MATCH CUT onto the hero's printed sheet. The hero publishes
+ * its first-frame island on <html> (--hark-isl-x / --hark-isl-y: the mark's
+ * centre, --hark-isl-h: its on-screen height, CSS px). The island (mark and
+ * rings) glides and scales to exactly that place (~0.64 s, a FLIP transform;
+ * its hairlines stay hairlines all the way) while the margins and the readout
+ * fade; a field of contour lines prints round it, and the paper DRAINS, band
+ * by band, outward from the island (each band snaps away whole, so the edge
+ * is always a crisp contour line — the site's chapter cut, "contour flood",
+ * in reverse). The WebGL sheet prints outward from the same island underneath,
+ * and once it has, the loader's island fades into it. The neatline stays: the
+ * chrome's collar sits on the same line.
+ * No published island (or the story isn't at the hero's first frame): the
+ * rings pulse outward and the drain opens from the loader's own island.
+ * finish() resolves as the drain begins (main.ts fires 'hark:reveal', so the
+ * hero's own entrance rides it); the node removes itself after.
  *
  * Rules: shows at least ~1.2 s, never hangs (every wait is a timer, never an
- * animation frame, so a background tab still finishes), the page behind is
- * inert while it's up, skip (?nointro) removes it at once. Reduced motion (or
- * Motion switched off earlier this session): no pulse, no drain — the sheet
- * simply fades.
+ * animation frame, so a background tab still finishes; the glide is drawn by
+ * animation frames but lands by timer), the page behind is inert while it's
+ * up, skip (?nointro) removes it at once. Reduced motion (or Motion switched
+ * off earlier this session): no glide, no pulse, no drain — the sheet simply
+ * crossfades onto the scene.
  *
  * API used by main.ts: createLoader(root, { skip }) → { progress(0..1), finish() }.
  */
@@ -32,16 +43,56 @@ import { islandRingCount, islandSvg, sizeIsland } from './mark'
 const MIN_MS = 1200
 /** once finish() is called: the last rings close */
 const CLOSE_MS = 260
-/** the rings pulse outward, the contour field prints across the sheet */
+/** (no match) the rings pulse outward, the contour field prints across the sheet */
 const PULSE_MS = 240
+/** (match) the island glides onto the hero's island */
+const MOVE_MS = 640
+/** (match) the contour field prints this far into the glide */
+const FIELD_AT = 0.55
 /** the paper drains away, band by band */
 const DRAIN_MS = 620
-/** drain bands (contour steps from the middle to past the corners) */
+/** (match) the island holds once the drain begins, while the sheet prints it underneath … */
+const HOLD_MS = 470
+/** … then fades into it */
+const ISL_FADE_MS = 420
+/** drain bands (contour steps from the island to past the corners) */
 const BANDS = 9
 const WATER_RINGS = 6
+/** island SVG viewBox width, and its width in mark heights (the viewBox spans 1560 units; the mark's coast 1000) */
+const VB = parseFloat(ISLAND_VIEWBOX.split(' ')[2]) || 1560
+const ISL_PER_MARK = VB / 1000
+/** the hero's first frame holds its sheet this far into the chapter */
+const HERO_FIRST = 0.07
 
 const wait = (ms: number) => new Promise<void>(r => window.setTimeout(r, ms))
 const clamp01 = (v: number) => (v > 0 ? (v < 1 ? v : 1) : 0)
+const inOutCubic = (v: number) => (v < 0.5 ? 4 * v * v * v : 1 - Math.pow(-2 * v + 2, 3) / 2)
+
+interface IslandRect {
+  /** the mark's centre (CSS px, viewport) */
+  x: number
+  y: number
+  /** the mark's on-screen height (CSS px) */
+  h: number
+}
+
+/** The hero's first-frame island, as the hero chapter publishes it on <html>; null when absent. */
+function heroIsland(W: number, H: number): IslandRect | null {
+  try {
+    // the story must be on the hero's first frame (a #hash or ?c= deep link lands elsewhere)
+    const st = window.__hark?.engine?.state
+    if (st && (st.slots[st.index]?.def.id !== 'hero' || st.local > HERO_FIRST)) return null
+    const cs = getComputedStyle(document.documentElement)
+    const x = parseFloat(cs.getPropertyValue('--hark-isl-x'))
+    const y = parseFloat(cs.getPropertyValue('--hark-isl-y'))
+    const h = parseFloat(cs.getPropertyValue('--hark-isl-h'))
+    if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(h)) return null
+    if (h < 16 || x < 0 || y < 0 || x > W || y > H) return null
+    return { x, y, h }
+  } catch {
+    return null
+  }
+}
 
 export function createLoader(root: HTMLElement, { skip = false } = {}) {
   if (skip) {
@@ -65,8 +116,8 @@ export function createLoader(root: HTMLElement, { skip = false } = {}) {
     <div class="ld-sheet" aria-hidden="true">
       <div class="ld-frame"><i></i><i></i><i></i><i></i></div>
       <p class="ld-margin ld-margin--tl">${BRAND.short}</p>
-      <p class="ld-margin ld-margin--tr">Sheet 01 · 1:24 000</p>
-      <p class="ld-margin ld-margin--bl">${MICROCOPY.coordinates}</p>
+      <p class="ld-margin ld-margin--tr">${SHEET.name(1, CHAPTERS[0]?.label ?? 'Relief')}</p>
+      <p class="ld-margin ld-margin--bl">Scale ${SHEET.scale}</p>
       <p class="ld-margin ld-margin--br">Contour interval 20 m</p>
       <div class="ld-core">
         <div class="ld-island">${islandSvg('ld-isl', { water: WATER_RINGS, ringAttrs: 'pathLength="1" stroke-dasharray="1 1" stroke-dashoffset="1"' })}</div>
@@ -74,6 +125,11 @@ export function createLoader(root: HTMLElement, { skip = false } = {}) {
       </div>
     </div>
   </div>`
+  // the loader's neatline stands in for the chrome's (same line, same ink) until the match cut ends:
+  // two semi-transparent hairlines stacked would print darker, then snap lighter at teardown
+  const html = document.documentElement
+  html.classList.add('ld-up')
+  const handFrame = () => html.classList.remove('ld-up')
   holdInert('loader', [
     document.getElementById('track'),
     document.getElementById('stages'),
@@ -85,6 +141,7 @@ export function createLoader(root: HTMLElement, { skip = false } = {}) {
   const paperSvg = root.querySelector<SVGSVGElement>('.ld-paper')!
   const paper = root.querySelector<SVGPathElement>('.ld-paper-p')!
   const field = root.querySelector<SVGGElement>('.ld-field')!
+  const island = root.querySelector<HTMLElement>('.ld-island')!
   const isl = root.querySelector<SVGSVGElement>('.ld-isl')!
   const num = root.querySelector<HTMLElement>('.ld-num')!
   const ringEls: SVGPathElement[][] = Array.from({ length: rings }, () => [])
@@ -113,7 +170,10 @@ export function createLoader(root: HTMLElement, { skip = false } = {}) {
   let lastPct = -1
   let lastT = start
   let raf = 0
+  let moveRaf = 0
   let alive = true
+  /** finish() has begun the exit: the progress loop stops */
+  let exiting = false
 
   // each ring draws over `span` of the progress; they start one after another
   const span = Math.min(0.5, 2.4 / rings)
@@ -148,7 +208,7 @@ export function createLoader(root: HTMLElement, { skip = false } = {}) {
     shown += (goal - shown) * (1 - Math.exp(-dt * (finishing ? 10 : 3.2)))
     if (Math.abs(goal - shown) < 0.002) shown = goal
     apply()
-    if (!draining) raf = requestAnimationFrame(frame)
+    if (!exiting) raf = requestAnimationFrame(frame)
   }
   apply()
   raf = requestAnimationFrame(frame)
@@ -157,13 +217,15 @@ export function createLoader(root: HTMLElement, { skip = false } = {}) {
     if (!alive) return
     alive = false
     if (raf) cancelAnimationFrame(raf)
+    if (moveRaf) cancelAnimationFrame(moveRaf)
     window.removeEventListener('resize', sizePaper)
     unsize()
     releaseInert('loader')
+    handFrame()
     root.remove()
   }
 
-  /* ------------------------------------------------ the drain (finish) */
+  /* ------------------------------------------------ the exit (finish) */
 
   // nested contour blobs around the island, from the middle to past the corners
   const blob = (k: number, cx: number, cy: number, r: number) => {
@@ -183,26 +245,26 @@ export function createLoader(root: HTMLElement, { skip = false } = {}) {
     return `${d}Z`
   }
 
-  const drain = async () => {
-    draining = true
-    const box = isl.getBoundingClientRect()
-    const cx = box.width ? box.left + box.width / 2 : W / 2
-    const cy = box.height ? box.top + box.height / 2 : H / 2
-    const reach = Math.hypot(Math.max(cx, W - cx), Math.max(cy, H - cy)) * 1.32
-    const r0 = Math.max(24, Math.min(box.width || 120, 260) * 0.22)
+  /** print the contour field round (cx, cy), first line at r0 (index every 5th); the drain follows it */
+  const printField = (cx: number, cy: number, r0: number) => {
+    const reach = Math.max(r0 * 1.5, Math.hypot(Math.max(cx, W - cx), Math.max(cy, H - cy)) * 1.32)
     const blobs: string[] = []
     for (let k = 0; k < BANDS; k++) {
       const f = k / (BANDS - 1)
       blobs.push(blob(k, cx, cy, r0 + (reach - r0) * Math.pow(f, 1.12)))
     }
-    // the contour field printed across the sheet (index every 5th)
     field.innerHTML = blobs
       .map((d, k) => `<path class="ld-line${(k + 1) % 5 === 0 ? ' is-index' : ''}" d="${d}"/>`)
       .join('')
-    const lines = [...field.querySelectorAll<SVGPathElement>('path')]
-    wrap.classList.add('is-pulse')
-    await wait(PULSE_MS)
-    // band by band: the hole snaps out to the next contour; its edge is the front
+    wrap.classList.add('is-field')
+    return { blobs, lines: [...field.querySelectorAll<SVGPathElement>('path')] }
+  }
+
+  /** band by band: the hole snaps out to the next contour; its edge is the front */
+  const drain = async ({ blobs, lines }: ReturnType<typeof printField>) => {
+    draining = true
+    // the scene shows through from here on: let the pointer reach it
+    root.style.pointerEvents = 'none'
     const rect = `M0 0H${W}V${H}H0Z`
     for (let k = 0; k < BANDS; k++) {
       paper.setAttribute('d', rect + blobs[k])
@@ -215,6 +277,38 @@ export function createLoader(root: HTMLElement, { skip = false } = {}) {
       const f = k / (BANDS - 1)
       await wait((DRAIN_MS / BANDS) * (1.5 - f))
     }
+  }
+
+  /**
+   * The match cut: the island (mark and rings) glides onto the hero's island, a
+   * FLIP transform about its centre. Drawn by animation frames, landed by a timer
+   * (a background tab still ends in place). --u follows the scale, so the
+   * coast and the rings keep their true hairline widths all the way.
+   */
+  const glide = (to: IslandRect) => {
+    const box = island.getBoundingClientRect()
+    const w = Math.max(1, box.width)
+    const k1 = (to.h * ISL_PER_MARK) / w
+    const dx = to.x - (box.left + box.width / 2)
+    const dy = to.y - (box.top + box.height / 2)
+    const set = (e: number) => {
+      const k = 1 + (k1 - 1) * e
+      island.style.transform = `translate(${(dx * e).toFixed(2)}px, ${(dy * e).toFixed(2)}px) scale(${k.toFixed(4)})`
+      isl.style.setProperty('--u', (VB / (w * k)).toFixed(3))
+    }
+    const t0 = performance.now()
+    const step = (ms: number) => {
+      moveRaf = 0
+      const v = clamp01((ms - t0) / MOVE_MS)
+      set(inOutCubic(v))
+      if (v < 1 && alive) moveRaf = requestAnimationFrame(step)
+    }
+    moveRaf = requestAnimationFrame(step)
+    return wait(MOVE_MS).then(() => {
+      if (moveRaf) cancelAnimationFrame(moveRaf)
+      moveRaf = 0
+      set(1)
+    })
   }
 
   return {
@@ -232,23 +326,58 @@ export function createLoader(root: HTMLElement, { skip = false } = {}) {
       await wait(CLOSE_MS)
       shown = 1
       apply()
+      exiting = true
       if (calm) {
-        // no pulse, no drain: the sheet simply fades onto the scene
+        // no glide, no pulse, no drain: the sheet simply crossfades onto the scene
         wrap.classList.add('is-out')
+        handFrame()
         releaseInert('loader')
+        root.style.pointerEvents = 'none'
         window.setTimeout(teardown, 420)
         await wait(60)
         return
       }
       releaseInert('loader')
-      // every step is a timer, so a hidden tab still finishes; a safety net
-      // removes the sheet even if something above throws
-      window.setTimeout(teardown, PULSE_MS + DRAIN_MS * 1.6 + 400)
-      void drain()
+      const to = heroIsland(W, H)
+      if (!to) {
+        // no island to cut to: the rings pulse outward, the paper drains from the loader's own island
+        window.setTimeout(teardown, PULSE_MS + DRAIN_MS * 1.6 + 400)
+        // the sheet (and its neatline) fades: the chrome's own collar shows as the paper drains
+        handFrame()
+        const box = isl.getBoundingClientRect()
+        const cx = box.width ? box.left + box.width / 2 : W / 2
+        const cy = box.height ? box.top + box.height / 2 : H / 2
+        const f = printField(cx, cy, Math.max(24, Math.min(box.width || 120, 260) * 0.22))
+        wrap.classList.add('is-pulse')
+        void wait(PULSE_MS)
+          .then(() => drain(f))
+          .catch(() => {})
+          .then(() => teardown())
+        // hand over as the drain begins, so the scene's own reveal rides it
+        await wait(PULSE_MS)
+        return
+      }
+      // the match cut: every step is a timer, so a hidden tab still finishes; a
+      // safety net removes the sheet even if something below throws
+      window.setTimeout(teardown, MOVE_MS + DRAIN_MS * 1.6 + HOLD_MS + ISL_FADE_MS + 400)
+      wrap.classList.add('is-match')
+      const run = async () => {
+        const landed = glide(to)
+        await wait(MOVE_MS * FIELD_AT)
+        // the survey prints round the island's destination; the paper drains from just outside its rings
+        const f = printField(to.x, to.y, to.h * 1.02)
+        await landed
+        const drained = drain(f)
+        // the sheet prints the same island underneath; then the loader's island fades into it
+        await wait(HOLD_MS)
+        wrap.classList.add('is-landed')
+        await Promise.all([drained, wait(ISL_FADE_MS)])
+      }
+      void run()
         .catch(() => {})
         .then(() => teardown())
-      // hand over as the drain begins, so the scene's own reveal rides it
-      await wait(PULSE_MS)
+      // hand over as the drain begins (the island has landed), so the scene's own reveal rides it
+      await wait(MOVE_MS)
     },
   }
 }

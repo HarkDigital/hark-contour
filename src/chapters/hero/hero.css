@@ -153,10 +153,6 @@
   margin-top: -3px;
   color: var(--fg-muted);
 }
-.stage-hero .hr-scale {
-  margin: 3px 0 0;
-  max-width: 150px;
-}
 
 /* ---------------- payoff ---------------- */
 .stage-hero .hr-payoff {

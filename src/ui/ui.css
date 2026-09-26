@@ -126,6 +126,10 @@
   border: 1px solid var(--frame-c, rgba(43, 37, 33, 0.5));
   pointer-events: none;
 }
+/* while the loader's neatline stands in for this one (loader.ts), only one is printed */
+html.ld-up .ch-frame {
+  visibility: hidden;
+}
 /* the inner line of the double neatline */
 .ch-frame::before,
 .ld-frame::before {
@@ -556,12 +560,24 @@
 .ch-read.is-cue .ch-read-n {
   color: var(--box-accent);
 }
+/* an invisible copy of the readout: chrome.ts measures every readout and cue in it */
+.ch-read.ch-read--probe {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: -webkit-max-content;
+  width: max-content;
+  visibility: hidden;
+  pointer-events: none;
+}
 .ch-scale-row {
   display: flex;
   align-items: flex-start;
 }
+/* the bar spans the readout's (fixed) width: seven equal segments, never under 26px */
 .ch-chapters {
   display: block;
+  flex: 1 1 auto;
 }
 .ch-segs {
   display: flex;
@@ -572,6 +588,10 @@
 .ch-segs li {
   display: block;
   position: relative;
+  flex: 1 1 0;
+}
+.ch-segs .ch-seg0 {
+  flex: none;
 }
 .ch-seg0 {
   width: 0;
@@ -599,7 +619,8 @@
 .ch-seg {
   position: relative;
   display: block;
-  width: 26px;
+  width: 100%;
+  min-width: 26px;
   height: 26px;
   padding: 0;
   margin: 0;
@@ -639,17 +660,6 @@
 .ch-seg:focus-visible {
   outline-offset: 1px;
 }
-.ch-coord {
-  align-self: center;
-  margin: -9px 0 0 16px;
-  font-family: var(--font-mono);
-  font-weight: 500;
-  font-size: 10px;
-  letter-spacing: 0.06em;
-  color: var(--box-muted);
-  white-space: nowrap;
-}
-
 /* Read as a page: the last chrome Tab stop, hidden until focused */
 .ch-readpage {
   position: absolute;
@@ -856,11 +866,6 @@ html.menu-open .ch-frame {
 
 /* ---------------- responsive ---------------- */
 
-@media (max-width: 1100px) {
-  .ch-coord {
-    display: none;
-  }
-}
 @media (max-width: 900px) {
   .ch-link {
     padding: 1px 12px 0;
@@ -931,7 +936,7 @@ html.menu-open .ch-frame {
     gap: 9px;
   }
   .ch-seg {
-    width: 25px;
+    min-width: 25px;
   }
 }
 @media (max-width: 400px) {
@@ -965,7 +970,6 @@ html.menu-open .ch-frame {
   .ch-prefs {
     height: 36px;
   }
-  .ch-coord,
   .ch-north {
     display: none;
   }
@@ -1026,6 +1030,21 @@ html.menu-open .ch-frame {
     text-decoration: underline;
     text-underline-offset: 4px;
   }
+  /* buttons are shaped by fill and shadow alone, which forced colours drop: an outline edge
+     (no layout shift), in the link or button colour; focus keeps its own, heavier ring */
+  .hud-btn,
+  .fb-sec--hero .fallback-copy p:last-child a {
+    outline: 1px solid LinkText;
+    outline-offset: -1px;
+  }
+  button.hud-btn {
+    outline-color: ButtonText;
+  }
+  .hud-btn:focus-visible,
+  .fb-sec--hero .fallback-copy p:last-child a:focus-visible {
+    outline: 3px solid Highlight;
+    outline-offset: 3px;
+  }
 }
 
 /* ---------------- loader (src/ui/loader.ts) ---------------- */
@@ -1059,7 +1078,7 @@ html.menu-open .ch-frame {
   stroke: var(--index-line);
   stroke-width: 1.8;
 }
-.ld.is-pulse .ld-line {
+.ld.is-field .ld-line {
   opacity: 0.85;
 }
 .ld .ld-line.is-gone {
@@ -1077,6 +1096,22 @@ html.menu-open .ch-frame {
   transition: opacity 0.26s ease;
 }
 .ld.is-pulse .ld-sheet {
+  opacity: 0;
+}
+/* the match cut: the margins and the readout fade; the island glides on, the neatline stays
+   (the chrome's collar sits on the same line) */
+.ld-margin,
+.ld-read {
+  transition: opacity 0.3s ease;
+}
+.ld.is-match .ld-margin,
+.ld.is-match .ld-read {
+  opacity: 0;
+}
+.ld-island {
+  transition: opacity 0.42s ease;
+}
+.ld.is-landed .ld-island {
   opacity: 0;
 }
 .ld-frame {
@@ -1540,16 +1575,19 @@ html.no-webgl body {
   font-size: 18px;
   color: var(--ink);
 }
-/* the hero's two links print as the site's buttons */
+/* the hero's two links print as the site's buttons (font-size 0 hides the ' · ' between them,
+   so the 62ch measure would be 0 here: no max-width) */
 .fb-sec--hero .fallback-copy p:last-child {
   display: flex;
   flex-wrap: wrap;
   gap: 10px;
+  max-width: none;
   margin-top: 26px;
   font-size: 0;
 }
 .fb-sec--hero .fallback-copy p:last-child a {
   display: inline-flex;
+  white-space: nowrap;
   align-items: center;
   padding: 14px 20px 13px;
   font-family: var(--font-sans);

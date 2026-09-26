@@ -284,6 +284,8 @@ export class Annotations {
   pins: Pin[] = []
   /** the pixel ratio the lettering was drawn for */
   letteredDpr = 0
+  /** bumped each time the lettering is redrawn (its widths may have moved) */
+  version = 0
   private res: U<THREE.Vector2> = { value: new THREE.Vector2(1440, 900) }
   private dpr: U<number>
   private atlas: THREE.CanvasTexture
@@ -353,15 +355,30 @@ export class Annotations {
     }
   }
 
-  /** Draw the lettering at this screen's pixel ratio (after the web fonts are in). */
+  /** the lettering resolution for a render pixel ratio */
+  private static res(dpr: number) {
+    return Math.max(1, Math.min(3, dpr))
+  }
+
+  /** the lettering was drawn for a pixel ratio far from this one (redraw it) */
+  stale(dpr: number) {
+    return Math.abs(Annotations.res(dpr) - this.letteredDpr) > 0.35
+  }
+
+  /**
+   * Draw the lettering at this screen's pixel ratio (after the web fonts are
+   * in). The first call builds every label's quad; later calls (a pixel-ratio
+   * change, late fonts) keep each quad and its material and swap in a new
+   * texture, so no program is ever dropped and relinked.
+   */
   async letter(dpr: number) {
     if (this.busy) return
     this.busy = true
     try {
       await ensureFonts()
-      const k = Math.max(1, Math.min(3, dpr))
+      const k = Annotations.res(dpr)
       this.letteredDpr = k
-      const make = (text: string, font: number, o: LabelOptions): Label => {
+      const make = (prev: Label | null, text: string, font: number, o: LabelOptions): Label => {
         // labelTexture draws glyphs at size × 2 canvas px: size = font × dpr / 2 prints 1:1
         const size = (font * k) / 2
         const { texture } = labelTexture(text, { ...o, size })
@@ -369,6 +386,20 @@ export class Annotations {
         texture.minFilter = THREE.LinearFilter
         texture.magFilter = THREE.LinearFilter
         texture.anisotropy = 1
+        const img = texture.image as HTMLCanvasElement
+        const glyph = size * 2
+        const hw = (o.haloWidth ?? 0.22) * glyph
+        const pad = Math.ceil(hw + glyph * 0.2)
+        if (prev) {
+          const old = prev.u.uMap.value
+          prev.u.uMap.value = texture
+          old.dispose()
+          prev.w = img.width / k
+          prev.h = img.height / k
+          prev.pad = pad / k
+          prev.font = font
+          return prev
+        }
         const q = quad(
           LABEL_FRAG,
           {
@@ -384,10 +415,6 @@ export class Annotations {
         )
         q.u.uSnap.value = 1
         this.group.add(q.mesh)
-        const img = texture.image as HTMLCanvasElement
-        const glyph = size * 2
-        const hw = (o.haloWidth ?? 0.22) * glyph
-        const pad = Math.ceil(hw + glyph * 0.2)
         return {
           mesh: q.mesh,
           u: q.u as Label['u'],
@@ -397,13 +424,10 @@ export class Annotations {
           font,
         }
       }
-      const drop = (p: Pair | null) => {
-        if (!p) return
-        for (const l of [p.s, p.l]) {
-          this.group.remove(l.mesh)
-          l.u.uMap.value.dispose()
-          ;(l.mesh.material as THREE.ShaderMaterial).dispose()
-        }
+      const pair = (prev: Pair | null, text: string, fontS: number, fontL: number, o: LabelOptions): Pair => {
+        const s = make(prev ? prev.s : null, text, fontS, o)
+        const l = make(prev ? prev.l : null, text, fontL, o)
+        return prev ?? { s, l }
       }
       const titleO: LabelOptions = {
         font: 'sans',
@@ -429,24 +453,11 @@ export class Annotations {
       }
       for (const p of this.pins) {
         const s = SERVICES[p.summit.index]
-        drop(p.title)
-        drop(p.num)
-        drop(p.elev)
-        const title = `${s.num} · ${s.title}`
-        p.title = {
-          s: make(title, FONT.titleS, titleO),
-          l: make(title, FONT.titleL, titleO),
-        }
-        p.num = {
-          s: make(s.num, FONT.numS, numO),
-          l: make(s.num, FONT.numL, numO),
-        }
-        const elev = `${p.summit.elev} m`
-        p.elev = {
-          s: make(elev, FONT.elevS, elevO),
-          l: make(elev, FONT.elevL, elevO),
-        }
+        p.title = pair(p.title, `${s.num} · ${s.title}`, FONT.titleS, FONT.titleL, titleO)
+        p.num = pair(p.num, s.num, FONT.numS, FONT.numL, numO)
+        p.elev = pair(p.elev, `${p.summit.elev} m`, FONT.elevS, FONT.elevL, elevO)
       }
+      this.version++
     } finally {
       this.busy = false
     }

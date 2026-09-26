@@ -5,7 +5,7 @@ import { C } from '../../kit/chart'
 import type { DrawTime } from './field'
 
 /*
- * The relief-model workshop's pieces, all flat printed colour:
+ * The relief-model workshop's pieces, all flat printed color:
  *
  *   draftMaterial   a flat sheet over the chart: the survey grid's ticks, the
  *                   old dotted coastline, the contour draft (pencil, then ink,

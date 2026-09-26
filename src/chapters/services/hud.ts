@@ -1,5 +1,5 @@
 import { el, rise, setRise } from '../../core/dom'
-import { SECTIONS, SERVICES } from '../../content'
+import { SECTIONS, SERVICES, SHEET } from '../../content'
 import { iconSvg } from './icons'
 import type { Summit } from './range'
 
@@ -76,7 +76,7 @@ export class Hud {
     this.introTitle = rise(el('h2', 'hud-h2 su-intro-title', undefined, this.intro), 'Eleven ways to be <em>heard.</em>')
     const meta = el('div', 'su-intro-meta', undefined, this.intro)
     meta.setAttribute('aria-hidden', 'true')
-    el('p', 'hud-coord su-intro-sheet', `Sheet 03 · The Summits · ${pad(SERVICES.length)} benchmarks · contour interval 100 m`, meta)
+    el('p', 'hud-coord su-intro-sheet', `${SHEET.name(3, 'Summits')} · ${pad(SERVICES.length)} benchmarks · contour interval 100 m`, meta)
 
     /* the legend box */
     this.col = el('div', 'su-col', undefined, stage)

@@ -17,8 +17,8 @@ import { simplex2, fbm, ridged } from '../../kit/noise'
 
 /** contour interval (world units) — the draft, the chart and the boards all share it */
 export const INTERVAL = 0.2
-/** decorative metres per world unit (spot heights and contour values in the marginalia) */
-export const METRES = 100
+/** decorative meters per world unit (spot heights and contour values in the marginalia) */
+export const METERS = 100
 
 export type V2 = [number, number]
 

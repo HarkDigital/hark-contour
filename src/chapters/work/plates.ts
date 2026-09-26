@@ -8,13 +8,15 @@ import type { WorkItem } from '../../content'
  * caption strip, and the image window. At rest the plate lies flat on the
  * chart beside its site, showing its sheet-index face (a hatched window with
  * the site number); when its site is active it lifts off the chart, turns to
- * face the drone and the screenshot prints into the window, left → right.
+ * face the drone and the screenshot prints into the window, left → right
+ * (or, under reduced motion / Motion off, simply fades in: uWipe 0). uAlpha
+ * fades the whole plate's image with its mount.
  *
  * The plate's geometry is 1 world unit wide (scale it); +y is the caption's
  * "up", the face looks along +z.
  */
 
-/** mount canvas layout (px) */
+/** mount canvas layout (px, drawn scaled to the canvas: 1024 wide, 640 on phones) */
 const MW = 1024
 const SIDE = 34
 const TOP = 34
@@ -55,10 +57,12 @@ function tracked(x: CanvasRenderingContext2D, s: string, px: number, py: number,
   return w
 }
 
-function drawMount(cv: HTMLCanvasElement, w: WorkItem, k: number, ref: string) {
-  cv.width = MW
-  cv.height = MH
+function drawMount(cv: HTMLCanvasElement, w: WorkItem, k: number, ref: string, px: number) {
+  const sc = px / MW
+  cv.width = px
+  cv.height = Math.round(MH * sc)
   const x = cv.getContext('2d')!
+  x.setTransform(sc, 0, 0, sc, 0, 0)
   // paper, a shade lighter than the chart so the plate lifts off it
   x.fillStyle = '#f7f3ea'
   x.fillRect(0, 0, MW, MH)
@@ -129,14 +133,15 @@ function drawMount(cv: HTMLCanvasElement, w: WorkItem, k: number, ref: string) {
   const lw = tracked(x, `PLATE ${pad2(k + 1)}`, SIDE, cy, 3.4)
   x.fillStyle = C.ink
   x.font = `700 21px ${FONTS.sans}`
-  tracked(x, w.name.toUpperCase(), SIDE + lw + 22, cy, 3.2)
+  tracked(x, w.name.toUpperCase(), SIDE + lw + 30, cy, 3.2)
   x.fillStyle = C.inkSoft
   x.font = `500 19px ${FONTS.mono}`
   const right = `${hostOf(w.url)}${isPreview(w.url) ? ' · PREVIEW' : ''} · ${ref}`
   tracked(x, right.toUpperCase(), MW - SIDE, cy, 1.2, 'right')
-  // a small vermilion rule between the plate number and the name
+  // a small vermilion rule centred in a wide gap between the plate number and
+  // the name (a separator, never a letter on the number)
   x.fillStyle = C.signal
-  x.fillRect(SIDE + lw + 8, cy - 9, 3, 18)
+  x.fillRect(SIDE + lw + 14, cy - 8, 2, 16)
 }
 
 const IMAGE_VERT = /* glsl */ `
@@ -149,19 +154,20 @@ const IMAGE_VERT = /* glsl */ `
 /* the screenshot prints into the window left → right behind a soft vermilion edge */
 const IMAGE_FRAG = /* glsl */ `
   uniform sampler2D map;
-  uniform float uDevelop, uLevel, uHasMap;
+  uniform float uDevelop, uLevel, uHasMap, uWipe, uAlpha;
   uniform vec3 uEdgeC;
   varying vec2 vUv;
   void main() {
-    // a slightly raked print front sweeping left → right
+    // a slightly raked print front sweeping left → right (uWipe 1), or the
+    // whole print fading in at once (uWipe 0: reduced motion / Motion off)
     float x = vUv.x + (vUv.y - 0.5) * 0.06;
     float front = uDevelop * 1.16 - 0.08;
-    float a = 1.0 - smoothstep(front - 0.035, front, x);
-    float live = step(uDevelop, 0.999);
+    float a = mix(uDevelop, 1.0 - smoothstep(front - 0.035, front, x), uWipe);
+    float live = step(uDevelop, 0.999) * uWipe;
     float edge = smoothstep(front - 0.045, front - 0.012, x) * (1.0 - smoothstep(front - 0.012, front, x)) * live;
     vec3 img = texture2D(map, vUv).rgb * uLevel;
     vec3 col = mix(img, uEdgeC, edge * 0.75);
-    float alpha = max(a, edge * 0.85) * uHasMap;
+    float alpha = max(a, edge * 0.85) * uHasMap * uAlpha;
     if (alpha < 0.004) discard;
     gl_FragColor = vec4(col, alpha);
   }
@@ -202,13 +208,20 @@ function softShadow(): THREE.CanvasTexture {
   return shadowTex
 }
 
-export function buildPlate(w: WorkItem, k: number, ref: string, placeholder: THREE.Texture): Plate {
+export function buildPlate(w: WorkItem, k: number, ref: string, placeholder: THREE.Texture, mobile = false): Plate {
   const root = new THREE.Group()
   const canvas = document.createElement('canvas')
-  drawMount(canvas, w, k, ref)
+  // a phone never draws the plate wider than ~560 device px
+  const px = mobile ? 640 : MW
+  drawMount(canvas, w, k, ref, px)
   const mountTex = new THREE.CanvasTexture(canvas)
   mountTex.colorSpace = THREE.SRGBColorSpace
   mountTex.anisotropy = 8
+  // free the canvas's pixels once uploaded: a late-fonts redraw() resizes and
+  // redraws it (and it is freed again after that upload)
+  mountTex.onUpdate = () => {
+    canvas.width = canvas.height = 1
+  }
   const mountMat = new THREE.MeshBasicMaterial({ map: mountTex, toneMapped: false, fog: false, transparent: true })
   const mount = new THREE.Mesh(new THREE.PlaneGeometry(1, 1 / MOUNT_ASPECT), mountMat)
   root.add(mount)
@@ -219,6 +232,8 @@ export function buildPlate(w: WorkItem, k: number, ref: string, placeholder: THR
       uDevelop: { value: 0 },
       uLevel: { value: 0.95 },
       uHasMap: { value: 0 },
+      uWipe: { value: 1 },
+      uAlpha: { value: 1 },
       uEdgeC: { value: new THREE.Color(C.signal) },
     },
     vertexShader: IMAGE_VERT,
@@ -262,7 +277,7 @@ export function buildPlate(w: WorkItem, k: number, ref: string, placeholder: THR
     leaderMat,
     leaderPos,
     redraw() {
-      drawMount(canvas, w, k, ref)
+      drawMount(canvas, w, k, ref, px)
       mountTex.needsUpdate = true
     },
   }

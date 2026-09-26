@@ -40,8 +40,11 @@ import { noteChapter } from './fallback'
  *                 alternating ink / paper segments (the current one survey
  *                 vermilion; each a ≥ 24px button named for its chapter;
  *                 hovering one cues "Go to …"), numbered at the divisions
- *                 like a real scale, beside a north arrow and the studio's
- *                 coordinates (decorative; hidden on small phones).
+ *                 like a real scale, beside a north arrow (decorative; hidden
+ *                 on small phones). The readout keeps one width (the widest
+ *                 of every readout and cue), so the segments never move
+ *                 under the pointer. (The studio's coordinates are lettered
+ *                 in the hero's sheet margin and at the Benchmark, not here.)
  *   Read as a page  the static page (?read#<chapter you are on>): the last
  *                 chrome Tab stop, visually hidden until focused; the menu
  *                 sheet carries it too.
@@ -168,7 +171,6 @@ export function createChrome(root: HTMLElement, engine: Engine, sound: Sound) {
           <p class="ch-read" aria-hidden="true"><span class="ch-read-n"></span><span class="ch-read-l"></span><span class="ch-read-b"></span></p>
           <div class="ch-scale-row">
             <nav class="ch-chapters" aria-label="Chapters"><ol class="ch-segs"><li class="ch-seg0" aria-hidden="true">0</li>${segs}</ol></nav>
-            <span class="ch-coord" aria-hidden="true">${esc(MICROCOPY.coordinates)}</span>
           </div>
         </div>
       </div>
@@ -239,13 +241,41 @@ export function createChrome(root: HTMLElement, engine: Engine, sound: Sound) {
 
   let lastIndex = -1
   let cueIndex = -1
-  const showReadout = (i: number, cue = false) => {
+  const letter = (n: Element, l: Element, b: Element, i: number, cue: boolean) => {
     const s = slots[i]
-    if (!s) return
-    readN.textContent = cue ? `Go to ${pad(i + 1)}` : `${pad(i + 1)} / ${pad(total)}`
-    readL.textContent = s.def.label
-    readB.textContent = biz(s.def.id, s.def.label)
-    readEl.classList.toggle('is-cue', cue)
+    if (!s) return false
+    n.textContent = cue ? `Go to ${pad(i + 1)}` : `${pad(i + 1)} / ${pad(total)}`
+    l.textContent = s.def.label
+    b.textContent = biz(s.def.id, s.def.label)
+    return true
+  }
+  const showReadout = (i: number, cue = false) => {
+    if (letter(readN, readL, readB, i, cue)) readEl.classList.toggle('is-cue', cue)
+  }
+
+  // One width for the readout: the widest of all seven readouts and all seven
+  // "Go to" cues, measured in an invisible copy that takes the same rules. The
+  // box is anchored right, so a readout that changed width would slide every
+  // segment sideways under the pointer (and under the focus ring). Measured
+  // again once the fonts arrive and whenever a breakpoint changes the type.
+  const probe = readEl.cloneNode(true) as HTMLElement
+  probe.classList.add('ch-read--probe')
+  readEl.after(probe)
+  const probeN = probe.querySelector('.ch-read-n')!
+  const probeL = probe.querySelector('.ch-read-l')!
+  const probeB = probe.querySelector('.ch-read-b')!
+  const fitReadout = () => {
+    let w = 0
+    for (let i = 0; i < total; i++)
+      for (const cue of [false, true]) if (letter(probeN, probeL, probeB, i, cue)) w = Math.max(w, probe.getBoundingClientRect().width)
+    readEl.style.minWidth = w > 0 ? `${Math.ceil(w)}px` : ''
+  }
+  fitReadout()
+  document.fonts?.ready.then(fitReadout).catch(() => {})
+  for (const q of ['(max-width: 480px)', '(max-width: 400px)', '(max-width: 350px)', '(orientation: landscape) and (max-height: 500px)']) {
+    const mq = matchMedia(q)
+    if (typeof mq.addEventListener === 'function') mq.addEventListener('change', fitReadout)
+    else mq.addListener?.(fitReadout)
   }
   segEls.forEach((b, i) => {
     const cue = () => {

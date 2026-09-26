@@ -32,20 +32,23 @@ export interface Rect {
   z1: number
 }
 
-/** Sample `height` over `r` every `step` world units, yielding to the browser between chunks. */
-export async function buildField(height: (x: number, z: number) => number, r: Rect, step: number, chunks = 4): Promise<Field> {
+/**
+ * Sample `height` over `r` every `step` world units, in slices of ~`sliceMs`
+ * with a frame yield between them (no long task, even on a slow phone).
+ */
+export async function buildField(height: (x: number, z: number) => number, r: Rect, step: number, sliceMs = 8): Promise<Field> {
   const nx = Math.round((r.x1 - r.x0) / step) + 1
   const nz = Math.round((r.z1 - r.z0) / step) + 1
   const data = new Float32Array(nx * nz)
-  const per = Math.ceil(nz / chunks)
-  for (let c = 0; c < chunks; c++) {
-    const j1 = Math.min(nz, (c + 1) * per)
-    for (let j = c * per; j < j1; j++) {
-      const z = r.z0 + j * step
-      const row = j * nx
-      for (let i = 0; i < nx; i++) data[row + i] = height(r.x0 + i * step, z)
+  let t0 = performance.now()
+  for (let j = 0; j < nz; j++) {
+    const z = r.z0 + j * step
+    const row = j * nx
+    for (let i = 0; i < nx; i++) data[row + i] = height(r.x0 + i * step, z)
+    if (j < nz - 1 && performance.now() - t0 > sliceMs) {
+      await nextFrame()
+      t0 = performance.now()
     }
-    if (c < chunks - 1) await nextFrame()
   }
   const x0 = r.x0
   const z0 = r.z0
@@ -166,7 +169,7 @@ export function contourLoops(f: Field, level: number, r: Rect): Loop[] {
           break
         case 5:
         case 10: {
-          // saddle: resolve by the cell's centre
+          // saddle: resolve by the cell's center
           const ctr = (v[j * W + i] + v[j * W + i + 1] + v[(j + 1) * W + i + 1] + v[(j + 1) * W + i]) / 4 > level
           if ((k === 5) === ctr) {
             connect(L(), T())

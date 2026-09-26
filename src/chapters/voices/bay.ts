@@ -1,7 +1,9 @@
 import type * as THREE from 'three'
 import type { World } from '../../world/World'
 import { chartMaterial, type ChartMaterial } from '../../kit/chart'
+import type { TerrainData } from '../../kit/terrain'
 import { simplex2, fbm } from '../../kit/noise'
+import { KNOCK_GLSL, bindKnock, type Knock } from './sonar'
 
 /*
  * THE BAY — the voices chapter's nautical chart.
@@ -27,29 +29,58 @@ import { simplex2, fbm } from '../../kit/noise'
  */
 
 export const BAY = { width: 104, depth: 78, cx: 0, cz: 2 }
-/** decorative soundings: fathoms per height unit */
-export const FATHOMS = 40
-/** isobath step (height units) — every 3 fathoms, a bolder line every 4th */
+/** decorative soundings: meters of depth per height unit (the sheet's note: depths in meters) */
+export const METERS = 40
+/** isobath step (height units) — every 3 m, a bolder line every 4th */
 export const ISO = 0.075
 
 export interface Station {
   x: number
   z: number
-  /** which side of the station the lettering sits on */
+  /** which side of the station the lettering runs to (1 east, -1 west) */
   side: 1 | -1
+  /**
+   * where the lettering hangs off the marker: 'above' (north) or 'below'
+   * (south). Chosen per station so the name sits in the quadrant the survey
+   * track leaves free — clear of the incoming and the outgoing leg (a
+   * printed chart never runs a line through a name; the track's shader also
+   * knocks out under each lettered box, see voices/index.ts).
+   */
+  row: 'above' | 'below'
+  /** gap between the marker and the lettering's near edge (default 0.55) */
+  clear?: number
 }
 
 /** the eight sounding stations, in survey order (lane by lane) */
 export const STATIONS: Station[] = [
-  { x: -14, z: -5.5, side: 1 },
-  { x: -1.5, z: -8.5, side: 1 },
-  { x: 11, z: -5, side: 1 },
-  { x: 14.5, z: 5.5, side: -1 },
-  { x: 3, z: 9.5, side: 1 },
-  { x: -9, z: 6, side: 1 },
-  { x: -5, z: 19, side: 1 },
-  { x: 9, z: 21.5, side: -1 },
+  // in from the launch (W), out ENE: the legs bow north, the name hangs below
+  { x: -14, z: -5.5, side: 1, row: 'below' },
+  // the lane's northern crest: both legs fall away south
+  { x: -1.5, z: -8.5, side: 1, row: 'above' },
+  // the lane turns south here: the NE quadrant is open
+  { x: 11, z: -5, side: 1, row: 'above' },
+  // in from the north, out west: the NW quadrant between the legs is open
+  { x: 14.5, z: 5.5, side: -1, row: 'above' },
+  // the second lane's southern dip: both legs rise north
+  { x: 3, z: 9.5, side: 1, row: 'below' },
+  // in from the ESE, out south: the north side is open (set a little higher,
+  // clear of the incoming leg; east, so the drone keeps the rose out of frame)
+  { x: -9, z: 6, side: 1, row: 'above', clear: 1 },
+  // in from the NNW, out ESE: the NE quadrant is open
+  { x: -5, z: 19, side: 1, row: 'above' },
+  // in from the west, the end of the survey: the SW quadrant is open
+  { x: 9, z: 21.5, side: -1, row: 'below' },
 ]
+
+/** the bay's water tints (sRGB): shallows, and the deep water they step out to */
+export const WATER_SHALLOW = '#c7dee8'
+export const WATER_DEEP = '#dfe8ea'
+/** the land's tint ramp runs to this many times the highest hill (only the palest tints print) */
+const LAND_RAMP = 3.4
+/** hillshade strength on the land */
+const LAND_SHADE = 0.5
+/** the lettering's knock-out halo: a mid water tone */
+export const WATER_HALO = '#d8e5ea'
 
 /** the survey launch point (a benchmark on the NW point) */
 export const LAUNCH = { x: -28.5, z: -6.5 }
@@ -108,7 +139,7 @@ export function bayHeight() {
     const D = 0.44 + 0.2 * mouth
     let depth = D * (1 - Math.exp(-d / 6.2))
     depth += 0.05 * w * Math.min(1, d / 4)
-    // a sand bank in the middle of the bay: shoals to a fathom, never dries
+    // a sand bank in the middle of the bay: shoals to about a meter, never dries
     const bx = x + 5
     const bz = z - 13.5
     depth *= 1 - 0.95 * Math.exp(-(bx * bx) / 60 - (bz * bz) / 9)
@@ -121,38 +152,52 @@ export function bayHeight() {
  * isobaths (depth contours) offshore of the water-lining, turning a deeper
  * blue as the water deepens, a bolder line every 4th, and stepped depth
  * tints (shallows blue, deep water paler — the chart convention).
+ * The chart's own linework on the water (water-lining, isobaths) is knocked
+ * out under the lettered names (`knock`), as a printed chart does.
  * If the kit's shader text ever changes shape, the splice is skipped and
  * the plain chart remains.
  */
-export function bayMaterial(world: World, geo: THREE.BufferGeometry, mobile: boolean): ChartMaterial & { uniforms: { uIso: { value: number }; uIsoOn: { value: number } } } {
+export function bayMaterial(world: World, geo: THREE.BufferGeometry, mobile: boolean, knock: Knock): ChartMaterial & { uniforms: { uIso: { value: number }; uIsoOn: { value: number } } } {
+  // a nautical sheet prints its land as pale buff: the tint ramp is stretched
+  // so the shore's hills stay in the two palest layer tints, and the hillshade
+  // is soft. The drone passes the north shore every beat, and dark umber hills
+  // against the water would swing light ↔ dark under a fast scroll (WCAG 2.3.1)
+  const hTop = Math.max(0.5, (geo.userData as TerrainData).hMax ?? 2.6)
   const mat = chartMaterial(world, {
     terrain: geo,
     interval: 0.14,
     index: 5,
     hMin: 0,
+    hMax: hTop * LAND_RAMP,
     waterSpacing: 0.021,
     waterLines: 5,
     grid: 0.42,
     gridSize: 12,
     lift: 0,
     stepped: 0.75,
-    shade: 0.8,
+    shade: LAND_SHADE,
     relief: 1.6,
     line: mobile ? 0.9 : 1,
   })
   const u = mat.uniforms as ChartMaterial['uniforms'] & { uIso: { value: number }; uIsoOn: { value: number } }
   u.uIso = { value: ISO }
   u.uIsoOn = { value: 1 }
-  // chart blues for a nautical sheet: shallows tinted, deep water paler
-  u.uWaterC.value.set('#b6d2db')
-  u.uWaterDeep.value.set('#e4ebe5')
+  // chart blues for a nautical sheet: shallows tinted, deep water paler. The
+  // two sit close in luminance (≈0.70 vs ≈0.79; hue does the telling): the
+  // drone crosses a shoal every beat, and a fast scroll must not turn that
+  // into a light ↔ dark swing of 0.1 or more (WCAG 2.3.1)
+  u.uWaterC.value.set(WATER_SHALLOW)
+  u.uWaterDeep.value.set(WATER_DEEP)
   u.uGridC.value.set('#8aa9b6')
 
   let fs = mat.fragmentShader
   const waterA = 'vec3 water = mix(uWaterC, uWaterDeep, clamp(k / max(uWaterLines * 1.6, 1.0), 0.0, 1.0));'
   const coastA = 'col = mix(col, uCoast, coast * uLines);'
-  if (fs.includes(waterA) && fs.includes(coastA) && fs.includes('void main()')) {
-    fs = fs.replace('void main()', 'uniform float uIso, uIsoOn;\n  void main()')
+  const liningA = 'col = mix(col, uWaterLineC, wl * wet * 0.8 * uLines);'
+  if (fs.includes(waterA) && fs.includes(coastA) && fs.includes(liningA) && fs.includes('void main()') && fs.includes('fwH')) {
+    fs = fs.replace('void main()', `uniform float uIso, uIsoOn;\n${KNOCK_GLSL}\n  void main()`)
+    // no linework under a lettered name
+    fs = fs.replace(liningA, 'float lk = knockOut(vW.xz);\n    col = mix(col, uWaterLineC, wl * wet * 0.8 * uLines * lk);')
     fs = fs.replace(
       waterA,
       /* glsl */ `float depB = max(-h, 0.0);
@@ -165,14 +210,16 @@ export function bayMaterial(world: World, geo: THREE.BufferGeometry, mobile: boo
       /* glsl */ `${coastA}
     // isobaths: depth contours beyond the water-lining, a deeper blue offshore
     float fB = depB / uIso;
-    float fwB = max(fwidth(fB), 1e-5);
+    // width from the field's analytic slope, like the kit's own lines (even, no dashes)
+    float fwB = max(fwH / uIso, 1e-5);
     float isoA = isoLine(fB, fwB, 0.85 * px);
     float isoI = isoLine(fB * 0.25, fwB * 0.25, 1.6 * px);
     float beyond = smoothstep(uIso * 1.2, uIso * 1.6, depB);
     vec3 isoC = mix(uWaterLineC, uCoast, smoothstep(uIso, uIso * 7.0, depB));
-    col = mix(col, isoC, max(isoA * 0.7, isoI * 0.92) * beyond * wet * uLines * uIsoOn);`,
+    col = mix(col, isoC, max(isoA * 0.7, isoI * 0.92) * beyond * wet * uLines * uIsoOn * lk);`,
     )
     mat.fragmentShader = fs
+    bindKnock(mat, knock)
   }
   return mat as ChartMaterial & { uniforms: { uIso: { value: number }; uIsoOn: { value: number } } }
 }

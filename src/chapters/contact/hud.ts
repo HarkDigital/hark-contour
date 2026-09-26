@@ -1,11 +1,12 @@
 import { el, rise } from '../../core/dom'
-import { BRAND, CONTACT, MICROCOPY, OTHER_CONCEPTS } from '../../content'
+import { BRAND, CONTACT, MICROCOPY, OTHER_CONCEPTS, SHEET } from '../../content'
 
 /*
  * The contact LEGEND BOX: paper, a double neatline, lifted off the chart
  * (left and vertically centred on landscape, along the bottom on portrait).
  * The address is the primary action (the big vermilion block), Copy beside
- * it, a scale bar with the studio's coordinates as marginalia, the sister
+ * it, the sheet's marginalia (its name and the studio's coordinates, with a
+ * little "you are here" ring; the chrome owns the only scale bar), the sister
  * concepts, Back to top and the colophon.
  *
  * Layout is MEASURED (on resize / font load / size change, never per frame)
@@ -13,6 +14,7 @@ import { BRAND, CONTACT, MICROCOPY, OTHER_CONCEPTS } from '../../content'
  * `art` is that rectangle in CSS px. Short screens step the box down through
  * fit levels until it leaves the disc room:
  *   fit-1..3  type and spacing step down
+ *   fit-3s    the sheet line (decorative marginalia) drops
  *   fit-4     'Other concepts' folds behind a toggle in the footer row and the
  *             colophon line drops (both stay in the copy layer and ?read)
  *   fit-5     the Other-concepts block goes entirely (never while it is open)
@@ -123,11 +125,13 @@ export function buildHud(stage: HTMLElement): Hud {
   copyBtn.innerHTML =
     '<span class="ct-copy-idle">Copy<span class="ct-copy-more"> email</span></span><span class="ct-copy-done" aria-hidden="true">Copied</span><span class="ct-copy-fail" aria-hidden="true">Copy failed</span>'
 
-  // the legend's scale bar, with the studio's coordinates as marginalia
-  const scale = el('div', 'ct-scale', undefined, panel)
-  scale.setAttribute('aria-hidden', 'true')
-  el('span', 'hud-rule ct-rule', undefined, scale)
-  el('span', 'hud-coord ct-coord', MICROCOPY.coordinates, scale)
+  // the sheet's marginalia: which sheet, and where we are (decorative)
+  const sheet = el('p', 'hud-coord ct-sheet', undefined, panel)
+  sheet.setAttribute('aria-hidden', 'true')
+  el('span', 'ct-sheet-name', SHEET.name(7, 'Benchmark'), sheet)
+  const here = el('span', 'ct-sheet-here', undefined, sheet)
+  el('span', 'ct-here', undefined, here)
+  here.append(MICROCOPY.coordinates)
 
   const more = el('div', 'ct-more', undefined, panel)
   el('p', 'hud-label ct-more-label', 'Other concepts', more)
@@ -220,7 +224,7 @@ export function buildHud(stage: HTMLElement): Hud {
   return hud
 }
 
-const FIT = ['ct-fit-1', 'ct-fit-2', 'ct-fit-3', 'ct-fit-4', 'ct-fit-5'] as const
+const FIT = ['ct-fit-1', 'ct-fit-2', 'ct-fit-3', 'ct-fit-3s', 'ct-fit-4', 'ct-fit-5'] as const
 
 /** Bottom of the chrome's brand lockup (CSS px), or -1 when it isn't there. */
 function brandBottom() {

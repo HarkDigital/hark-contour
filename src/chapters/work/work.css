@@ -171,6 +171,13 @@
   padding: 24px 26px 22px;
   align-self: center;
 }
+/* the box's copy fades apart from its panel (boxes hand over in place) */
+.stage-work .wk-card > * {
+  opacity: var(--wk-ink, 1);
+}
+.stage-work .wk-card.is-blank > * {
+  visibility: hidden;
+}
 .stage-work .wk-name {
   font-size: clamp(2rem, 3.1vw, 3.1rem);
   line-height: 0.98;

@@ -12,8 +12,11 @@ import type { HeightFn } from '../../kit/terrain'
 /** where "your site" is (world XZ); the headland's point */
 export const SITE = { x: 0, z: 0 }
 
-/** the chart sheet (terrain rectangle) */
-export const SHEET = { width: 60, depth: 48, cx: 1, cz: -3 }
+/** the chart's terrain rectangle */
+export const BOUNDS = { width: 60, depth: 48, cx: 1, cz: -3 }
+
+/** how far the sea floor sinks with the lift (the kit's uSeaLift): the sea stays nearly a level sheet */
+export const SEA = 0.12
 
 const smin = (a: number, b: number, k: number) => {
   const h = Math.min(1, Math.max(0, 0.5 + (0.5 * (b - a)) / k))

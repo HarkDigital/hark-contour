@@ -4,7 +4,7 @@ import { clamp, damp, lerp, smoothstep } from '../../core/math'
 import { nextFrame } from '../../core/yield'
 import { SERVICES } from '../../content'
 import { C, chartMaterial, labelTexture, ensureFonts, type ChartMaterial } from '../../kit/chart'
-import { terrainGeometry, drape } from '../../kit/terrain'
+import { terrainGeometryAsync, drape } from '../../kit/terrain'
 import { buildRange, INTERVAL, type Range } from './range'
 import { Annotations, type Box, type PinLayout } from './annot'
 import { Hud, type HudMetrics } from './hud'
@@ -157,6 +157,46 @@ export default function create(): Chapter {
   }))
   const order = new Int32Array(N)
   const cands = new Float32Array(4)
+
+  // the wide view's panorama board: its row pitch (and whether the
+  // elevations, or even the names, fit) comes from the SETTLED wide view,
+  // once per viewport, so it is the same at any jumped-to local and never
+  // changes mid-intro
+  const pW = newPose()
+  const board = {
+    W: 0,
+    H: 0,
+    top: 0,
+    introTop: 0,
+    introRight: 0,
+    gutter: 0,
+    valid: false,
+    lettering: -1,
+    pitch: 38,
+    elev: true,
+    names: true,
+  }
+  /** the settled wide view's summit points (CSS px) and a rehearsal layout */
+  const boardX = new Float32Array(N)
+  const boardY = new Float32Array(N)
+  const boardIn = new Uint8Array(N)
+  const rehearse: PinLayout = {
+    ok: true,
+    g: 0,
+    lead: 0,
+    tri: 10,
+    sign: 0,
+    reveal: 1,
+    alpha: 1,
+    textAlpha: 1,
+    full: true,
+    side: 1,
+    nudge: 0,
+    align: 0.5,
+    elev: 1,
+  }
+  const rehearseBox: Box = { x0: 0, x1: 0, y0: 0, y1: 0 }
+  const MARGIN = 14
 
   /** Catmull-Rom through the summit tops, at continuous index f */
   function summitPoint(f: number, out: THREE.Vector3) {
@@ -378,6 +418,101 @@ export default function create(): Chapter {
     }
   }
 
+  /**
+   * Fit the wide view's three label rows into the paper between the top band
+   * and the skyline (recomputed only when the viewport, the copy or the
+   * lettering moves). A name + elevation block reaches ~30 px over its row
+   * line and is ~25 px tall, a name alone ~16 / ~9 px; neighbouring rows keep
+   * an 11 px gap (the declutter pad). The placement is rehearsed on the
+   * settled view: where names + elevations don't all fit, the elevations go;
+   * where the names alone don't, the wide view letters numbers only (never a
+   * board with names missing).
+   */
+  function fitBoard(frame: Frame, m: HudMetrics, topBand: number) {
+    const W = Math.max(1, frame.width)
+    const H = Math.max(1, frame.height)
+    const b = board
+    if (
+      b.W === W &&
+      b.H === H &&
+      b.top === topBand &&
+      b.introTop === m.introTop &&
+      b.introRight === m.introRight &&
+      b.gutter === m.gutter &&
+      b.valid === m.valid &&
+      b.lettering === annot.version
+    )
+      return b
+    b.W = W
+    b.H = H
+    b.top = topBand
+    b.introTop = m.introTop
+    b.introRight = m.introRight
+    b.gutter = m.gutter
+    b.valid = m.valid
+    b.lettering = annot.version
+    widePose(pW, frame, m, 0)
+    probe.position.copy(pW.pos)
+    probe.fov = fov
+    probe.aspect = W / H
+    probe.updateProjectionMatrix()
+    probe.lookAt(pW.target)
+    probe.updateMatrixWorld()
+    let sky = Infinity
+    for (let i = 0; i < N; i++) {
+      const s = range.summits[i]
+      pv.set(s.x, s.h, s.z).project(probe)
+      boardX[i] = (pv.x * 0.5 + 0.5) * W
+      boardY[i] = (-pv.y * 0.5 + 0.5) * H
+      boardIn[i] = pv.z < 1 && boardX[i] > -4 && boardX[i] < W + 4 && boardY[i] > 0 && boardY[i] < H ? 1 : 0
+      if (boardIn[i] && boardY[i] < sky) sky = boardY[i]
+    }
+    // from row 0's line (24 px over the skyline) up to the top band, less 4 px for the idle drift
+    const room = sky - 24 - topBand - 4
+    const pE = Math.min(38, (room - 31) / 2)
+    const pN = Math.min(38, (room - 17) / 2)
+    const wide = !isPortrait(frame) && W >= 980
+    b.elev = wide && pE >= 36 && boardFits(W, sky, topBand, pE, true)
+    b.names = b.elev || (wide && pN >= 22 && boardFits(W, sky, topBand, pN, false))
+    b.pitch = b.elev ? pE : Math.max(22, pN)
+    return b
+  }
+
+  /**
+   * The live wide-view placement (west → east; centred, else flagged east,
+   * else west), rehearsed on the settled view with a little extra margin:
+   * does every summit on the sheet get its name?
+   */
+  function boardFits(W: number, sky: number, topBand: number, pitch: number, elev: boolean) {
+    const L = rehearse
+    L.elev = elev ? 1 : 0
+    let np = 0
+    for (let i = 0; i < N; i++) {
+      if (!boardIn[i]) continue
+      const p = annot.pins[i]
+      const x = boardX[i]
+      const y = boardY[i]
+      L.lead = y - (sky - 24 - range.summits[i].row * pitch)
+      const half = annot.nameWidth(p, true, 0) * 0.5
+      L.nudge = x - half < MARGIN ? MARGIN - (x - half) : x + half > W - MARGIN ? W - MARGIN - (x + half) : 0
+      let ok = false
+      for (let c = 0; c < 3 && !ok; c++) {
+        L.align = c === 0 ? 0.5 : c === 1 ? 0 : 1
+        const bx = annot.box(p, L, rehearseBox)
+        const pb = placed[np]
+        pb.x0 = x + bx.x0
+        pb.x1 = x + bx.x1
+        pb.y0 = y - bx.y1
+        pb.y1 = y - bx.y0
+        ok = pb.y0 > topBand + 2 && pb.x0 > MARGIN - 4 && pb.x1 < W - MARGIN + 4
+        for (let j = 0; ok && j < np; j++) if (overlaps(pb, placed[j], 12)) ok = false
+      }
+      if (!ok) return false
+      np++
+    }
+    return true
+  }
+
   const overlaps = (a: Box, b: Box, pad: number) => a.x0 < b.x1 + pad && a.x1 + pad > b.x0 && a.y0 < b.y1 + pad && a.y1 + pad > b.y0
 
   return {
@@ -390,7 +525,8 @@ export default function create(): Chapter {
       renderer = ctx.renderer
       range = buildRange()
       await nextFrame()
-      const geo = terrainGeometry({
+      // ~390k height samples on desktop: sliced, a frame yielded between slices
+      const geo = await terrainGeometryAsync({
         width: 98,
         depth: 68,
         cz: 1,
@@ -552,7 +688,7 @@ export default function create(): Chapter {
       annot.setViewport(W, H)
       // the lettering prints 1:1: redraw it if the render resolution moved a lot
       const dpr = renderer.getPixelRatio()
-      if (Math.abs(dpr - annot.letteredDpr) > 0.35) void annot.letter(dpr)
+      if (annot.stale(dpr)) void annot.letter(dpr)
 
       // ---------- the drone
       const drift = still ? 0 : 0.018 * Math.sin(t * 0.11) + 0.008 * Math.sin(t * 0.047 + 1.3)
@@ -618,20 +754,23 @@ export default function create(): Chapter {
       letter = instant ? letterOn : letterOn > letter ? Math.min(letterOn, letter + dt / 1.1) : Math.max(0, letter - dt / 0.45)
       const portrait = isPortrait(frame)
       const wideness = 1 - smoothstep(0.081, 0.1, local)
-      // full names where there's room: the wide view needs a wide landscape sheet,
-      // a close view only a tablet's width (phones letter numbers; the card names it)
-      const full = wideness > 0.5 ? !portrait && W >= 980 : W >= 700
+      const topBand = (m.valid ? m.safeTop : 80) - 18
+      const bd = fitBoard(frame, m, topBand)
+      // full names where there's room: the wide view needs a wide landscape sheet
+      // with room for the board over the range, a close view only a tablet's
+      // width (phones letter numbers; the card names it)
+      const full = wideness > 0.5 ? !portrait && W >= 980 && bd.names : W >= 700
       const marks = 1 - smoothstep(0.93, 0.965, local)
-      const margin = 14
+      const margin = MARGIN
       // panorama-board rows: in the wide view every name sits on one of three
-      // fixed lines above the skyline, the leader dropping to its summit
+      // lines above the skyline (pitched to the room), the leader dropping to its summit
       let skyline = Infinity
       for (let i = 0; i < N; i++) if (scr[i].ok && scr[i].y < skyline) skyline = scr[i].y
       for (let i = 0; i < N; i++) {
         const L = lays[i]
         const s = range.summits[i]
         const g = grow[i]
-        const rowWide = full ? scr[i].y - (skyline - 24 - s.row * 38) : 16 + (i % 2) * 24
+        const rowWide = full ? scr[i].y - (skyline - 24 - s.row * bd.pitch) : 16 + (i % 2) * 24
         const rowClose = 26 + (i % 2) * 22
         L.ok = scr[i].ok
         L.g = g
@@ -641,8 +780,8 @@ export default function create(): Chapter {
         L.sign = lerp(0, portrait ? 46 : 56, Math.min(1, g * 1.4))
         // lettered in, west → east
         L.reveal = clamp(letter * 1.5 - (i / (N - 1)) * 0.5)
-        // a narrow sheet has no room for elevations on the wide view
-        L.elev = full ? 1 : 1 - wideness
+        // a narrow or short sheet has no room for elevations on the wide view
+        L.elev = full && bd.elev ? 1 : 1 - wideness
         L.alpha = marks * (shown >= 0 ? lerp(0.85, 1, g) : 1)
         // beside the sign the name flips to the roomier side
         const nameW = annot.nameWidth(annot.pins[i], full, 1)
@@ -674,7 +813,6 @@ export default function create(): Chapter {
         }
       }
       const cardOn = shown >= 0 && !portrait && m.valid
-      const topBand = (m.valid ? m.safeTop : 80) - 18
       let np = 0
       for (let k = 0; k < n; k++) {
         const i = order[k]
@@ -691,10 +829,19 @@ export default function create(): Chapter {
         }
         const close = wideness < 0.5 && shown >= 0 && i !== shown
         const pref = i > shown ? 0 : 1
-        cands[0] = close ? alignT[i] : 0.5
-        cands[1] = close ? pref : 0.5
-        cands[2] = close ? 1 - pref : 0.5
-        cands[3] = 0.5
+        if (close) {
+          cands[0] = alignT[i]
+          cands[1] = pref
+          cands[2] = 1 - pref
+          cands[3] = 0.5
+        } else if (wideness >= 0.5) {
+          // the wide board: centred over its leader, else flagged east, else west
+          // (a crowded, height-bound range on a short sheet); a jump lands on the fresh layout
+          cands[0] = settle ? 0.5 : alignT[i]
+          cands[1] = 0.5
+          cands[2] = 0
+          cands[3] = 1
+        } else cands[0] = cands[1] = cands[2] = cands[3] = 0.5
         let placedOk = false
         for (let c = 0; c < 4 && !placedOk; c++) {
           if (c > 0 && cands[c] === cands[c - 1]) continue
@@ -725,6 +872,11 @@ export default function create(): Chapter {
         const L = lays[i]
         L.align = alignA[i]
         L.textAlpha = textA[i] * L.alpha
+        // a name that couldn't be placed takes its leader with it (the ▲ stays,
+        // an unnamed spot height): no leader stands pointing at empty paper.
+        // Its length follows the name's fade; under reduced motion it snaps.
+        const keep = Math.max(instant ? textT[i] : textA[i], L.g)
+        if (keep < 1) L.lead = lerp(L.tri * 0.72, L.lead, keep)
         annot.layout(annot.pins[i], L, lift)
       }
 

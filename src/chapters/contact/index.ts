@@ -27,11 +27,12 @@ import './contact.css'
  *   0.10–0.22  the legend box comes in (settled from 0.24: landing = intro = 0.3)
  *   0.18–0.50  the listening rings reach further out across the chart
  *   0.27–0.85  a slow drone drift round the disc; the light walks the rim
- *   0.85–1.00  the final still: nothing scroll-driven moves
+ *   0.85–1.00  the final still: nothing scroll-driven moves; the rings breathe
+ *              out at half pace
  *
- * Everything is derived from `local`; frame.time only drives the rings'
- * drift, the water-lining and a tiny hover, all off under reduced motion /
- * Motion off, and the hover dies for the final still.
+ * Everything is derived from `local`; time only drives the rings' drift, the
+ * water-lining and a tiny hover, all held under reduced motion / Motion off;
+ * the hover dies and the rings slow for the final still.
  */
 
 const FOV = 30
@@ -50,6 +51,21 @@ const EL2 = 31 * DEG
 /** the disc turns to face the final view, so its lettering reads square */
 const DISC_YAW = -24 * DEG
 
+/**
+ * The World damps fog toward its params at 5/s (src/world/World.ts) so cuts
+ * never pop. Here the fog follows the drone's height, which a quick scroll
+ * changes far faster than that: lagging fog washed the whole chart to paper
+ * and back on a fast scroll up (a large light-dark swing). Ask for the value
+ * that lands the damped fog exactly on the target this frame (off for the
+ * first frames after entry, where the World's own damping carries the cut).
+ */
+const WORLD_FOG_DAMP = 5
+const fogTarget = (want: number, cur: number, dt: number, on: boolean) => {
+  const k = 1 - Math.exp(-WORLD_FOG_DAMP * dt)
+  if (!on || k < 1e-3) return want
+  return clamp(cur + (want - cur) / k, -5000, 5000)
+}
+
 export default function create(): Chapter {
   const group = new THREE.Group()
   let hud: Hud
@@ -65,6 +81,10 @@ export default function create(): Chapter {
   let dFit = 11
   let hoverAmt = 0
   let idleAmt = 0
+  // the listening rings' drift, in packets (integrated, so its pace can ease)
+  let ringPhase = 0.3
+  // frames since the chapter became active (see fogTarget)
+  let live = 0
   const tmpF = new THREE.Vector3()
   const tmpR = new THREE.Vector3()
   const tmpU = new THREE.Vector3()
@@ -122,10 +142,10 @@ export default function create(): Chapter {
       await ensureFonts()
       const fontsIn = !document.fonts || document.fonts.check(`700 40px ${FONTS.sans}`)
       await nextFrame()
-      chart = await buildChart(ctx.world, ctx.mobile)
+      chart = await buildChart(ctx.world, ctx.mobile, fontsIn)
       group.add(chart.land, chart.rings.mesh, chart.here.mesh, ...chart.labels)
       await nextFrame()
-      disc = buildBenchmark(ctx.renderer, ctx.mobile)
+      disc = await buildBenchmark(ctx.renderer, ctx.mobile, fontsIn)
       disc.spin.rotation.y = DISC_YAW
       group.add(disc.group)
       if (!fontsIn) {
@@ -139,14 +159,22 @@ export default function create(): Chapter {
       await nextFrame()
     },
 
+    onEnter() {
+      live = 0
+    },
+
     update(local, frame, ctx) {
+      live++
       const W = frame.width
       const H = frame.height
       if (hud.dirty || W !== lastW || H !== lastH || !lay) relayout(W, H)
 
       const calm = ctx.reducedMotion || frame.reducedMotion || !!frame.still
-      idleAmt = damp(idleAmt, calm ? 0 : 1 - smoothstep(0.7, 0.85, local), 4, frame.dt)
-      const t = frame.time
+      // the drone's hover: none under reduced motion; with Motion off time is
+      // frozen, so hold it exactly (a slow decay would creep at the engine's
+      // quiet 2 fps heartbeat); it dies for the final still
+      if (ctx.reducedMotion || frame.reducedMotion) idleAmt = 0
+      else if (!frame.still) idleAmt = damp(idleAmt, 1 - smoothstep(0.7, 0.85, local), 4, frame.dt)
 
       // ---- the chart: flat printed sheet → relief
       const lift = liftAt(local)
@@ -177,7 +205,9 @@ export default function create(): Chapter {
       const copied = since >= 0 && since < 1.8 ? Math.sin((since / 1.8) * Math.PI) : 0
       if (copied > 0 || Math.abs(hoverAmt - hoverTo) > 0.004) window.__hark?.engine?.wake()
       const ru = chart.rings.u
-      ru.uPhase.value = ctx.reducedMotion ? 0.3 : t * 0.1
+      // outward at 0.1 packets/s, easing to half pace for the final still; held when calm
+      if (!calm) ringPhase = (ringPhase + frame.dt * lerp(0.1, 0.05, smoothstep(0.7, 0.85, local))) % 1000
+      ru.uPhase.value = ctx.reducedMotion ? 0.3 : ringPhase
       ru.uReach.value = lerp(3.2, 15, smoothstep(0.16, 0.5, local))
       ru.uAmt.value = smoothstep(0.14, 0.3, local) * (0.85 + 0.25 * hoverAmt + 0.3 * copied)
 
@@ -188,8 +218,9 @@ export default function create(): Chapter {
       // ---- the world: paper, the NW hillshade, fog that grows with the drone's height
       const pose = poseAt(local)
       const wp = ctx.world.params
-      wp.fogNear = pose.d + 3.5
-      wp.fogFar = pose.d + 22
+      const fog = ctx.world.chart
+      wp.fogNear = fogTarget(pose.d + 3.5, fog.uFogNear.value, frame.dt, live > 2)
+      wp.fogFar = fogTarget(pose.d + 22, fog.uFogFar.value, frame.dt, live > 2)
       // the key walks slowly round the rim as you drift (a glint in the lettering)
       const drift = driftAt(local)
       const ka = lerp(-2.2, -1.2, drift)

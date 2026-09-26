@@ -3,12 +3,12 @@ import type { CameraPose, Chapter, ChapterContext, Frame } from '../../core/type
 import { el, rise, setRise } from '../../core/dom'
 import { clamp, ease, smoothstep } from '../../core/math'
 import { nextFrame } from '../../core/yield'
-import { MICROCOPY, SECTIONS, TESTIMONIALS } from '../../content'
+import { SECTIONS, SHEET, TESTIMONIALS } from '../../content'
 import { C, FONTS, ensureFonts, marker, routeRibbon, type ChartMaterial } from '../../kit/chart'
-import { terrainGeometry } from '../../kit/terrain'
-import { BAY, FATHOMS, LAUNCH, ROSE, STATIONS, bayHeight, bayMaterial } from './bay'
+import { terrainGeometryAsync } from '../../kit/terrain'
+import { BAY, LAUNCH, METERS, ROSE, STATIONS, WATER_HALO, bayHeight, bayMaterial } from './bay'
 import { makeRose, type Rose } from './rose'
-import { letterPlane, pingRings, scatterSoundings, soundings, type Letter, type PingRings, type Soundings } from './sonar'
+import { knockRoute, letterPlane, makeKnock, pingRings, scatterSoundings, soundings, type Letter, type PingRings, type Soundings } from './sonar'
 import './voices.css'
 
 /*
@@ -28,9 +28,12 @@ import './voices.css'
  *                the drone tilts off toward station 1 from 0.062 and
  *                arrives a fifth of the way into the first voice
  *   0.085–0.925  eight voices (0.105 each): glide in (−0.32 … +0.1 of a
- *                beat, so the drone arrives as the quote lands) → ping,
- *                marker, lettering → dwell (slow orbit) → the rings settle
- *                into a blue trace as the drone moves on
+ *                beat). Mid-glide the legend box turns to the next voice
+ *                and, together, the ping blooms, the marker grows and the
+ *                company is lettered in, so the card and the chart name the
+ *                same client all the way through the beat → dwell (slow
+ *                orbit) → the rings settle into a blue trace as the drone
+ *                moves on
  *   0.908–1.000  the drone climbs to a top-down view of the whole survey
  *
  * Everything derives from `local`; frame.time only drives the idle pulse
@@ -56,6 +59,15 @@ const GB = 0.1
 /** the first glide: off the rose, arriving a third into the first voice */
 const G0A = 0.062
 const G0B = B0 + 0.22 * SPAN
+/**
+ * the legend box turns to voice i at the middle of the glide into station i
+ * (the first glide's middle is B0 itself), so the card, the ping and the
+ * lettered company arrive together
+ */
+const FLIP = (GA + GB) / 2
+const flipAt = (i: number) => (i <= 0 ? B0 : i >= N ? B1 : startOf(i) + FLIP * SPAN)
+/** lettering boxes the survey track is knocked out under: world padding around the letters */
+const KNOCK_PAD = 0.15
 
 interface Pose {
   tx: number
@@ -99,6 +111,8 @@ export default function create(): Chapter {
   let survey: ReturnType<typeof routeRibbon>
   let planned: ReturnType<typeof routeRibbon>
   let bench: ReturnType<typeof marker>
+  /** the lettered boxes (company, person per station) the track is knocked out under */
+  const knock = makeKnock()
   /** route length at each station (survey order), and at the launch */
   const atStation: number[] = []
   let routeLen = 1
@@ -224,7 +238,8 @@ export default function create(): Chapter {
     const m = SECTIONS.voices.title.match(/^(.*?\.)\s+(.*)$/)
     const html = m ? `${m[1]} <em>${m[2]}</em>` : SECTIONS.voices.title
     introTitle = rise(el('h2', 'hud-h2 vc-title', undefined, intro), html)
-    el('p', 'hud-coord vc-note', `Soundings in fathoms · ${MICROCOPY.coordinates}`, intro)
+    // chart marginalia (the sheet, its units): the chrome carries the scale bar, hero + Benchmark the coordinates
+    el('p', 'hud-coord vc-note', `${SHEET.name(4, 'Soundings')} · Depths in meters`, intro)
 
     panel = el('figure', 'vc-panel hud-panel', undefined, stage)
     const meta = el('div', 'vc-meta', undefined, panel)
@@ -288,11 +303,9 @@ export default function create(): Chapter {
   }
 
   function wantAt(local: number) {
-    let want = local < B0 ? -1 : local >= B1 ? N : Math.min(N - 1, Math.floor((local - B0) / SPAN))
+    let want = local < B0 ? -1 : local >= B1 ? N : clamp(Math.floor((local - B0 - FLIP * SPAN) / SPAN), 0, N - 1)
     if (shown >= -1 && want !== shown && Math.abs(want - shown) === 1) {
-      const hi = Math.max(want, shown)
-      const boundary = hi >= N ? B1 : B0 + hi * SPAN
-      if (Math.abs(local - boundary) < HYST) want = shown
+      if (Math.abs(local - flipAt(Math.max(want, shown))) < HYST) want = shown
     }
     return want
   }
@@ -319,7 +332,8 @@ export default function create(): Chapter {
 
   async function buildScene(ctx: ChapterContext) {
     mobile = ctx.mobile
-    const geo = terrainGeometry({
+    // ~270k samples: sampled in slices so the loader keeps drawing
+    const geo = await terrainGeometryAsync({
       width: BAY.width,
       depth: BAY.depth,
       cx: BAY.cx,
@@ -328,7 +342,7 @@ export default function create(): Chapter {
       detail: mobile ? 2 : 3,
       height,
     })
-    mat = bayMaterial(ctx.world, geo, mobile)
+    mat = bayMaterial(ctx.world, geo, mobile, knock)
     const land = new THREE.Mesh(geo, mat)
     land.renderOrder = 0
     group.add(land)
@@ -345,6 +359,8 @@ export default function create(): Chapter {
     // phones: the company as large as desktop's (relative to the frame), the name larger still
     const k = mobile ? 1.02 : 1
     const kn = mobile ? 1.32 : 1
+    // company line → person line, centre to centre
+    const gap = 0.28 + 0.62 * kn
     STATIONS.forEach((s, i) => {
       const t = TESTIMONIALS[i]
       const rings = pingRings(ctx.world, REACH, SPACING)
@@ -359,12 +375,11 @@ export default function create(): Chapter {
         weight: 420,
         size: 46,
         color: C.coast,
-        halo: '#dce8e6',
+        halo: WATER_HALO,
         haloWidth: 0.2,
         height: 1.55 * k,
         anchor,
       })
-      company.mesh.position.set(s.x + s.side * 0.72, 0.02, s.z - 0.28)
       const person = letterPlane(ctx.world, t.name, {
         font: 'sans',
         weight: 700,
@@ -372,16 +387,35 @@ export default function create(): Chapter {
         uppercase: true,
         tracking: 0.2,
         color: C.inkSoft,
-        halo: '#dce8e6',
+        halo: WATER_HALO,
         haloWidth: 0.2,
         height: 0.88 * kn,
         anchor,
       })
+      // the name hangs off the marker into the quadrant the track leaves free
+      // (bay.ts STATIONS): its first letter a little past the marker, its top
+      // (below) or its foot (above) clear of the marker's ring and both legs
+      const clear = s.clear ?? 0.55
+      const cz = s.row === 'below' ? s.z + clear + company.ink.hz : s.z - clear - person.ink.hz - gap
+      const x0 = s.x + s.side * 0.4
+      company.mesh.position.set(x0, 0.02, cz)
       // the canvas pads each side; nudge the smaller line so the letters align
-      person.mesh.position.set(s.x + s.side * (0.72 + 0.16 * kn), 0.02, s.z + 0.62 * kn)
+      person.mesh.position.set(x0 + s.side * 0.16 * kn, 0.02, cz + gap)
       group.add(rings.mesh, mk.group, company.mesh, person.mesh)
-      const w = Math.max(company.width, person.width)
-      rigs.push({ rings, mark: mk, company, person, cx: s.x + s.side * (w * 0.42 + 0.5), cz: s.z + 0.35 })
+      // the lettered boxes, and the subject the drone frames: the station and its lettering
+      let minX = s.x - 0.4
+      let maxX = s.x + 0.4
+      let minZ = s.z - 0.4
+      let maxZ = s.z + 0.4
+      ;[company, person].forEach((L, j) => {
+        const p = L.mesh.position
+        const r = knock.rects[i * 2 + j].set(p.x + L.ink.x0 - KNOCK_PAD, p.z - L.ink.hz - KNOCK_PAD, p.x + L.ink.x1 + KNOCK_PAD, p.z + L.ink.hz + KNOCK_PAD)
+        minX = Math.min(minX, r.x)
+        minZ = Math.min(minZ, r.y)
+        maxX = Math.max(maxX, r.z)
+        maxZ = Math.max(maxZ, r.w)
+      })
+      rigs.push({ rings, mark: mk, company, person, cx: (minX + maxX) / 2, cz: (minZ + maxZ) / 2 })
     })
     await nextFrame()
 
@@ -413,9 +447,9 @@ export default function create(): Chapter {
     survey = routeRibbon(pts, { width: 0.1, color: C.signal, dash: 0.36, gap: 0.16 })
     survey.mesh.position.y = 0.035
     survey.mesh.renderOrder = 5
-    // the kit's ribbon winds its triangles facing down: draw both faces so it shows from above
-    ;(planned.mesh.material as THREE.Material).side = THREE.DoubleSide
-    ;(survey.mesh.material as THREE.Material).side = THREE.DoubleSide
+    // both lines are knocked out under each lettered name (as it's lettered in)
+    knockRoute(planned.mesh.material as THREE.ShaderMaterial, knock)
+    knockRoute(survey.mesh.material as THREE.ShaderMaterial, knock)
     group.add(planned.mesh, survey.mesh)
 
     bench = marker({ color: C.signal, height: 0.9, radius: 0.22 })
@@ -423,13 +457,16 @@ export default function create(): Chapter {
     group.add(bench.group)
     await nextFrame()
 
-    // soundings, clear of the rose, the stations and their lettering
+    // soundings, clear of the rose, the stations and their lettering (a figure's half size around each box)
+    const figure = mobile ? 0.82 : 0.62
     const keep: [number, number, number][] = [[ROSE.x, ROSE.z, ROSE.r + 0.9]]
-    STATIONS.forEach((s, i) => {
-      keep.push([s.x, s.z, 2.1])
-      const w = Math.max(rigs[i].company.width, rigs[i].person.width)
-      for (let d = 1.2; d < w + 0.8; d += 1.3) keep.push([s.x + s.side * d, s.z + 0.2, 1.35])
-    })
+    for (const s of STATIONS) keep.push([s.x, s.z, 2.1])
+    // calm water under the intro headline (desktop framing)
+    const keepRect: [number, number, number, number][] = [mobile ? [-36, 20.5, -12, 31] : [-54, -3, -31, 6.5]]
+    for (let j = 0; j < STATIONS.length * 2; j++) {
+      const r = knock.rects[j]
+      keepRect.push([r.x - figure * 1.05, r.y - figure * 0.55, r.z + figure * 1.05, r.w + figure * 0.55])
+    }
     const list = scatterSoundings(height, {
       x0: -44,
       x1: 40,
@@ -437,13 +474,12 @@ export default function create(): Chapter {
       z1: 34,
       step: mobile ? 3.6 : 3.1,
       minDepth: 0.075,
-      fathoms: FATHOMS,
+      meters: METERS,
       keepOut: keep,
-      // calm water under the intro headline (desktop framing)
-      keepRect: [mobile ? [-36, 20.5, -12, 31] : [-54, -3, -31, 6.5]],
+      keepRect,
       seed: 17,
     })
-    marks = soundings(ctx.world, list, mobile ? 0.82 : 0.62)
+    marks = soundings(ctx.world, list, figure)
     group.add(marks.mesh)
 
     // canvases drawn before the web fonts arrived: redraw once they have
@@ -534,8 +570,14 @@ export default function create(): Chapter {
         r.rings.u.uPhase.value = Math.max(0, p) * 4 + idle
         r.rings.mesh.visible = active > 0.001 || heard > 0.001
         r.mark.setGrow(ease.outCubic(smoothstep(-0.2, 0.12, p)))
-        r.company.u.uReveal.value = smoothstep(-0.04, 0.22, p)
-        r.person.u.uReveal.value = smoothstep(0.05, 0.3, p)
+        // lettered in from the card's turn (mid-glide, p ≈ −0.21): name and card agree
+        const rc = smoothstep(-0.22, 0.02, p)
+        const rp = smoothstep(-0.14, 0.1, p)
+        r.company.u.uReveal.value = rc
+        r.person.u.uReveal.value = rp
+        // the track under each name is knocked out as the name prints
+        knock.k[i * 2] = rc
+        knock.k[i * 2 + 1] = rp
       }
     },
     camera(local, frame, out: CameraPose) {

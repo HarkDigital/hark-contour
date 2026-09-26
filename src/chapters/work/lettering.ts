@@ -18,6 +18,8 @@ export interface Line {
   tracking?: number
   italic?: boolean
   uppercase?: boolean
+  /** measured and laid out but not drawn (a twin texture carries it) */
+  ghost?: boolean
 }
 
 export interface Stack {
@@ -30,6 +32,19 @@ export interface Stack {
 }
 
 const SCALE = 2
+
+/**
+ * Free a static canvas's pixels once the GPU has its copy. Every stack is
+ * drawn into a fresh canvas (a redraw builds a new texture), so nothing ever
+ * draws into this one again.
+ */
+export function releaseAfterUpload(t: THREE.Texture) {
+  t.onUpdate = () => {
+    const c = t.image as HTMLCanvasElement | undefined
+    if (c && 'width' in c) c.width = c.height = 1
+    t.onUpdate = null
+  }
+}
 
 export function stackTexture(
   lines: Line[],
@@ -66,6 +81,10 @@ export function stackTexture(
     let y = pad
     lines.forEach((l, i) => {
       const m = metrics[i]
+      if (l.ghost) {
+        y += m.h + gap
+        return
+      }
       x.font = fontOf(l)
       x.fillStyle = l.color
       const cy = y + m.h / 2
@@ -81,6 +100,7 @@ export function stackTexture(
   const texture = new THREE.CanvasTexture(c)
   texture.colorSpace = THREE.SRGBColorSpace
   texture.anisotropy = 8
+  releaseAfterUpload(texture)
   return { texture, aspect: c.width / c.height, hpx: c.height / SCALE, padPx: pad / SCALE }
 }
 

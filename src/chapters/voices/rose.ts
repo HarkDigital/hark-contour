@@ -187,7 +187,9 @@ export interface Rose {
 /** The rose as a flat plane (2r across) lying on the water; place with mesh.position. */
 export function makeRose(world: World, radius: number, mobile: boolean): Rose {
   const canvas = document.createElement('canvas')
-  canvas.width = canvas.height = mobile ? 1024 : 2048
+  // the rose is at most ~900 device px across at 1440×900 @2 (the intro, top-down), ~1450 on a 5K
+  // screen: 1536 keeps the degree figures and hairline ticks at ≥1 texel per pixel
+  canvas.width = canvas.height = mobile ? 1024 : 1536
   drawRose(canvas)
   const tex = new THREE.CanvasTexture(canvas)
   tex.colorSpace = THREE.SRGBColorSpace

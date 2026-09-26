@@ -1,4 +1,4 @@
-import { BRAND, CONTACT, MICROCOPY } from '../content'
+import { BRAND, CONTACT, MICROCOPY, SHEET } from '../content'
 import { CHAPTER_COPY_IDS, buildChapterCopy } from '../core/srContent'
 import { CHAPTERS } from '../chapters/index'
 import { CONCEPT_TAG, WORDMARK, islandSvg, markSvg, sizeIsland } from './mark'
@@ -45,7 +45,7 @@ const pad = (n: number) => String(n).padStart(2, '0')
 
 export function renderFallback(root: HTMLElement, at?: string) {
   document.documentElement.classList.add('no-webgl')
-  document.documentElement.classList.remove('menu-open', 'is-rotate')
+  document.documentElement.classList.remove('menu-open', 'is-rotate', 'ld-up')
   unmountRotateGate()
   // boot can fail while the loader or the menu still holds the page inert: let go
   releaseInert('loader')
@@ -143,7 +143,7 @@ export function renderFallback(root: HTMLElement, at?: string) {
   foot.innerHTML = `
     <span class="fb-foot-mark" aria-hidden="true">${markSvg('fb-foot-svg')}</span>
     <p class="fb-foot-t">${BRAND.tagline}</p>
-    <p class="fb-foot-m" aria-hidden="true"><span>Contour interval 20 m</span><span class="fb-scale"><i></i><i></i><i></i><i></i></span><span>1:24 000</span></p>`
+    <p class="fb-foot-m" aria-hidden="true"><span>Contour interval 20 m</span><span class="fb-scale"><i></i><i></i><i></i><i></i></span><span>${SHEET.scale}</span></p>`
   root.appendChild(foot)
 
   // open at the chapter asked for, the one the live story was on, or the #hash

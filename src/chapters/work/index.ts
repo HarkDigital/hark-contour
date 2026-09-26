@@ -1,16 +1,16 @@
 import * as THREE from 'three'
 import type { CameraPose, Chapter, ChapterContext, Frame } from '../../core/types'
 import { el, reveal, rise, setRise } from '../../core/dom'
-import { clamp, ease, lerp, smoothstep } from '../../core/math'
+import { clamp, damp, ease, lerp, smoothstep } from '../../core/math'
 import { nextFrame } from '../../core/yield'
-import { SECTIONS, WORK, workImage, type WorkItem } from '../../content'
+import { SECTIONS, SHEET, WORK, workImage, type WorkItem } from '../../content'
 import { C, chartMaterial, ensureFonts, marker, type ChartMaterial } from '../../kit/chart'
 import { printLine, type PrintLine } from './line'
-import { terrainGeometry, drape, heightRange } from '../../kit/terrain'
+import { terrainGeometryAsync, drape, heightRange } from '../../kit/terrain'
 import { loadScreenshot, placeholderTexture, whenRevealed } from '../../kit/images'
 import { CONTOUR_SEEDS, GRID, OTHERS, ROUTE, SITES, SPOT_BOXES, TERRAIN, grad, gridRef, height, maxOver, onContour, riverLine, spline, summit } from './land'
 import { MOUNT_ASPECT, PLATE_BOTTOM, buildPlate, hostOf, isPreview, type Plate } from './plates'
-import { breakName, stackTexture, type Line, type Stack } from './lettering'
+import { breakName, releaseAfterUpload, stackTexture, type Line, type Stack } from './lettering'
 import './work.css'
 
 /*
@@ -22,22 +22,33 @@ import './work.css'
  * mounted like a map inset) lying flat beside it — together they read as the
  * sheet index. The drone flies the route: the route draws itself in survey
  * vermilion, the site's contours turn vermilion, and its plate lifts off the
- * chart, turns to face the drone and the screenshot prints in, left → right,
- * held on two leader lines above its marker. Past the sixth site the drone
+ * chart, turns to face the drone and — once the drone holds over the site —
+ * the screenshot prints in, left → right, held on two leader lines above its
+ * marker. Past the sixth site the drone
  * climbs to a top-down overview: the relief settles back, a graticule prints
  * over the sheet and nine small markers grow, lettered, with a gazetteer.
  *
  *   0.000–0.095  intro: top-down sheet index (flat print), route + markers
  *                draw in; "Built to be heard." settled 0.035–0.135
  *   0.095–0.168  the dive to site 01: the map lifts into relief
- *   0.080–0.220  item 01 (card 0.150–0.216)
- *   0.220–0.820  items 02–06, 0.12 each: glide ~0.046, then dwell + card
+ *   0.080–0.220  item 01 (legend box from 0.150)
+ *   0.220–0.820  items 02–06, 0.12 each: glide ~0.046 (the legend boxes hand
+ *                over mid-glide), then dwell
  *   0.820–0.872  climb to the overview (relief settles to a low lift)
  *   0.846–0.944  gazetteer: "Nine more, all live."; rows step 0.868–0.936
  *   0.950–1.000  out: the drone climbs away, the chart flattens
  *
- * Everything derives from `local`; frame.time only drives the drone's idle
- * hover and the water-lining drift.
+ * Everything derives from `local` except the PRINT (WCAG 2.3.1): a plate's
+ * screenshot is dark and fills ~30% of the screen, so it may only change at a
+ * calm, time-limited pace. It prints only while the drone holds over its site
+ * (the scroll all but stopped for 0.15 s), develops and clears by damping in
+ * time (≥ 0.3 s, whatever the scroll speed), and never un-prints in place: a
+ * printed plate that leaves its site fades out whole and comes back to rest
+ * as its paper index face. Under reduced motion / Motion off the print fades
+ * in instead of wiping. The plates themselves lift only where the drone
+ * slows (under 0.6 vh/s), the legend boxes hand over in place (cardPanel),
+ * the hillshade eases off while moving and a fling washes toward paper.
+ * frame.time only drives the drone's idle hover and the water-lining drift.
  */
 
 const FEATURED = WORK.filter(w => w.featured)
@@ -71,12 +82,26 @@ const flightIn = (k: number): [number, number] => (k === 0 ? [DIVE_A, DIVE_B] : 
 const flightOut = (k: number): [number, number] => (k === NF - 1 ? [F1, GZ_B] : [departAt(k), arriveAt(k + 1)])
 const rowAt = (j: number) => ROW0 + ((j + 0.5) * (ROW1 - ROW0)) / NR
 
-/** card k visibility */
-function cardV(k: number, l: number) {
-  const a = arriveAt(k)
-  const d = departAt(k)
-  const inn = k === 0 ? smoothstep(0.146, 0.162, l) : smoothstep(a - 0.012, a + 0.002, l)
-  const out = 1 - smoothstep(d - 0.008, d + 0.002, l)
+/** mid-flight between site k-1 and site k: where their legend boxes hand over */
+const handAt = (k: number) => slotStart(k) - 0.004 + TRAV / 2
+/**
+ * Legend box k: its panel, and its copy. Between two sites the boxes hand
+ * over in place: the outgoing copy clears, the incoming panel settles over
+ * the outgoing one (which only then goes), then the incoming copy comes up —
+ * so the dock never flashes back to the chart between sites, and two boxes'
+ * copy never show through each other's panels. The copy is paced in time on
+ * top of this (INK_RATE): one box's copy at a time, and flying fast past
+ * several sites the dock stays a quiet blank panel instead of blinking text
+ * on and off.
+ */
+function cardPanel(k: number, l: number) {
+  const inn = k === 0 ? smoothstep(0.146, 0.162, l) : smoothstep(handAt(k) - 0.012, handAt(k) - 0.004, l)
+  const out = k === NF - 1 ? 1 - smoothstep(F1 - 0.008, F1 + 0.002, l) : 1 - smoothstep(handAt(k + 1) + 0.004, handAt(k + 1) + 0.012, l)
+  return inn * out
+}
+function cardInk(k: number, l: number) {
+  const inn = k === 0 ? smoothstep(0.15, 0.166, l) : smoothstep(handAt(k) - 0.002, handAt(k) + 0.008, l)
+  const out = k === NF - 1 ? 1 - smoothstep(F1 - 0.012, F1 - 0.002, l) : 1 - smoothstep(handAt(k + 1) - 0.012, handAt(k + 1) - 0.004, l)
   return inn * out
 }
 
@@ -89,15 +114,50 @@ function riseOf(k: number, l: number) {
   return up * (1 - down)
 }
 
-/** the screenshot printed into plate k's window */
-function developOf(k: number, l: number) {
-  const a = arriveAt(k)
-  const d = departAt(k)
-  return smoothstep(a - 0.004, a + 0.022, l) * (1 - smoothstep(d - 0.004, d + 0.004, l))
+/** the drone holds over site k: its plate may print */
+const holding = (k: number, l: number) => l >= arriveAt(k) - 0.004 && l < departAt(k)
+
+/* ---- the print's pace (time, not scroll) ---- */
+/** damping rate of a print / fade: half-way in ~0.17 s, done (snapped) in ~1.1 s */
+const PRINT_RATE = 4
+/** a print starts only once the scroll has all but stopped (slower than this, vh/s) … */
+const STEADY_V = 0.25
+/** … for this long (s) */
+const STEADY_T = 0.15
+/**
+ * a plate starts to lift off the chart only while the scroll is slower than
+ * this (vh/s); once lifted it follows the scroll back down as the drone leaves
+ */
+const LIFT_V = 0.6
+/** damping rate of a plate's lift */
+const LIFT_RATE = 5
+/**
+ * Flung through (≳ 2 vh/s) the drone crosses six sites of light plain and dark
+ * relief a second: wash the frame toward paper with the speed (as the engine
+ * does for flings across chapters) so the passing relief can't strobe.
+ */
+const WASH = { from: 1.2, to: 3.2, max: 0.8 }
+/** damping rate of the legend box's copy (out and in) */
+const INK_RATE = 8
+/**
+ * … and below that, while the drone is on the move the hillshade eases off
+ * (the dark slopes are what swing hardest through a fixed patch of the
+ * screen as the relief slides by), back to full as it holds over a site
+ */
+const SHADE = { full: 0.85, moving: 0.4, from: 0.25, to: 1.1, rate: 3 }
+function approach(v: number, target: number, dt: number, rate = PRINT_RATE) {
+  const n = damp(v, target, rate, dt)
+  return Math.abs(n - target) < 0.01 ? target : n
 }
 
 /* ---- sizes ---- */
 const MARKER_H = 1.15
+/** site lettering's scale at the dive (its world size up close) … */
+const SITE_DIVE_S = 0.56
+/** … and at most, from the overview heights */
+const SITE_MAX_S = 2.3
+/** the gazetteer's lettering at most */
+const OTHER_MAX_S = 1.6
 const OTHER_H = 0.8
 const REST_W = 4.2
 const PLATE_DEPTH = 0.7
@@ -140,13 +200,15 @@ type Align = 'left' | 'right' | 'center'
 interface Lab {
   mesh: THREE.Mesh
   mat: THREE.MeshBasicMaterial
-  draw: () => Stack
+  draw: (align: Align) => Stack
   /** world units per CSS px of lettering */
   k: number
   align: Align
   /** world width (for placement) */
   w: number
   h: number
+  /** halo padding, CSS px */
+  pad: number
 }
 
 const _d = new THREE.Vector3()
@@ -154,6 +216,7 @@ const _r = new THREE.Vector3()
 const _u = new THREE.Vector3()
 const _p = new THREE.Vector3()
 const _m = new THREE.Matrix4()
+const _q = new THREE.Vector2()
 const _flat = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), -Math.PI / 2)
 
 /** camera basis for yaw (0 = from the south, looking north) and pitch (down) */
@@ -195,6 +258,27 @@ class Work implements Chapter {
   private others: ReturnType<typeof marker>[] = []
   private otherH: number[] = []
   private siteLabs: Lab[] = []
+  /** each site label's 'SITE 0N' line (a twin of the same size: shown only for the dive) */
+  private siteNoLabs: Lab[] = []
+  /**
+   * per site, per side (0 left of the marker, 1 right): the label's lift over
+   * the relief for its footprint at the dive, and at its largest (overview)
+   */
+  private siteLabY: { dive: [number, number]; idx: [number, number] }[] = []
+  /** per site: the label side for this layout (1 right, -1 left) and its fit at the dive (≤ 1) */
+  private siteSide: number[] = []
+  private siteFit: number[] = []
+  /** … and its fit on the sheet index, as it opens (0.05) and as the Work nav lands (0.12) */
+  private siteFitA: number[] = []
+  private siteFitB: number[] = []
+  /** … and how far north of its home row it lies at the dive (clear of the legend box) */
+  private siteDz: number[] = []
+  private fitDz = 0
+  private fitY = 0
+  /** a label's screen box: x0, x1, bottom, top (CSS px) */
+  private box: [number, number, number, number] = [0, 0, 0, 0]
+  private fitA = shot()
+  private fitB = shot()
   private otherLabs: Lab[] = []
   private waterLabs: Lab[] = []
   private gridLabs: Lab[] = []
@@ -213,13 +297,30 @@ class Work implements Chapter {
   private frac: number[] = []
   private fontsDrawn = false
 
+  // the print (time-paced, see the header)
+  /** plate k's printed amount (0 paper … 1 printed) */
+  private dev = new Float32Array(NF)
+  /** plate k's whole-plate opacity (a printed plate leaving its site fades out) */
+  private vis = new Float32Array(NF).fill(1)
+  /** plate k's print style, latched as it starts: 1 wipe, 0 fade */
+  private wipe = new Float32Array(NF).fill(1)
+  /** plate k's lift, shown (follows riseOf, paced in time and held down at speed) */
+  private rise = new Float32Array(NF)
+  private steadyFor = 0
+  /** plate k may lift: the drone slowed over its site (cleared once it is back down) */
+  private lifting = new Uint8Array(NF)
+  /** 0 holding … 1 on the move (eased in time) */
+  private moving = 0
+  private lastT = 0
+  private fresh = true
+
   // DOM
   private safe!: HTMLElement
   private intro!: HTMLElement
   private introTitle!: HTMLElement
   private key!: HTMLElement
   private dock!: HTMLElement
-  private cards: { root: HTMLElement; name: HTMLElement }[] = []
+  private cards: { root: HTMLElement; name: HTMLElement; ink: number }[] = []
   private gazDock!: HTMLElement
   private gaz!: HTMLElement
   private gazTitle!: HTMLElement
@@ -227,6 +328,9 @@ class Work implements Chapter {
   private rows: HTMLAnchorElement[] = []
   private hoverRow = -1
   private curRow = -2
+  /** whose copy the dock is showing, and how much of it */
+  private dockCard = -1
+  private dockInk = 0
 
   // layout / camera
   private lay: Layout | null = null
@@ -244,7 +348,7 @@ class Work implements Chapter {
     await nextFrame()
 
     // ---- the land
-    const geo = terrainGeometry({
+    const geo = await terrainGeometryAsync({
       width: TERRAIN.width,
       depth: TERRAIN.depth,
       cx: TERRAIN.cx,
@@ -330,20 +434,41 @@ class Work implements Chapter {
       this.labY.set(lab, Math.max(0, maxOver(cx, z, lab.w / 2, lab.h / 2)))
       this.group.add(lab.mesh)
     }
-    const name = (t: string, size: number): Line[] =>
-      breakName(t).map(text => ({ text, font: 'sans', size, weight: 700, color: C.ink, tracking: 0.1, uppercase: true }))
+    const name = (t: string, size: number, ghost = false): Line[] =>
+      breakName(t).map(text => ({ text, font: 'sans', size, weight: 700, color: C.ink, tracking: 0.1, uppercase: true, ghost }))
     SITES.forEach((s, k) => {
-      const lines: Line[] = [{ text: `SITE ${pad2(k + 1)}`, font: 'mono', size: 38, weight: 600, color: C.signalText, tracking: 0.14 }, ...name(FEATURED[k].name, 48)]
+      // the name, and a twin carrying only the 'SITE 0N' line (the same size,
+      // so they register): the number shows only once the drone dives
+      const no = (ghost: boolean): Line => ({ text: `SITE ${pad2(k + 1)}`, font: 'mono', size: 38, weight: 600, color: C.signalText, tracking: 0.14, ghost })
+      const nameLines: Line[] = [no(true), ...name(FEATURED[k].name, 48)]
+      const noLines: Line[] = [no(false), ...name(FEATURED[k].name, 48, true)]
       const align: Align = s.side > 0 ? 'left' : 'right'
-      const lab = this.makeLab(() => stackTexture(lines, { align }), 0.6 / 48, align)
+      const lab = this.makeLab(a => stackTexture(nameLines, { align: a, haloWidth: 0.34 }), 0.6 / 48, align)
+      const twin = this.makeLab(a => stackTexture(noLines, { align: a, haloWidth: 0.34 }), 0.6 / 48, align)
+      // the lift over the relief for either side of the marker, at either size
+      const yOf = (side: number, sc: number) => {
+        const x = s.x + side * 0.6
+        return Math.max(0, maxOver(x + (side * lab.w * sc) / 2, s.z + 0.1, (lab.w * sc) / 2, (lab.h * sc) / 2))
+      }
+      this.siteLabY.push({ dive: [yOf(-1, 1), yOf(1, 1)], idx: [yOf(-1, SITE_MAX_S), yOf(1, SITE_MAX_S)] })
+      this.siteSide.push(s.side)
+      this.siteFit.push(1)
+      this.siteFitA.push(1)
+      this.siteFitB.push(1)
+      this.siteDz.push(0)
       put(lab, s.x + s.side * 0.6, s.z + 0.1)
+      put(twin, s.x + s.side * 0.6, s.z + 0.1)
       this.siteLabs.push(lab)
+      this.siteNoLabs.push(twin)
     })
     OTHERS.forEach((o, j) => {
       const lines: Line[] = [{ text: pad2(NF + j + 1), font: 'mono', size: 44, weight: 600, color: C.signalText, tracking: 0.06 }, ...name(REST[j].name, 48)]
       const align: Align = o.side > 0 ? 'left' : 'right'
-      const lab = this.makeLab(() => stackTexture(lines, { align }), 0.84 / 48, align)
+      const lab = this.makeLab(a => stackTexture(lines, { align: a }), 0.84 / 48, align)
       put(lab, o.x + o.side * 0.45, o.z + 0.3)
+      // lifted clear of the relief under its largest footprint
+      const hw = (lab.w * OTHER_MAX_S) / 2
+      this.labY.set(lab, Math.max(0, maxOver(o.x + o.side * (0.45 + hw), o.z + 0.3, hw, (lab.h * OTHER_MAX_S) / 2)))
       this.otherLabs.push(lab)
     })
     const water = (t: string, size: number): Line[] => [{ text: t, font: 'display', size, weight: 400, italic: true, color: C.coast, tracking: 0.05 }]
@@ -401,7 +526,7 @@ class Work implements Chapter {
     const ph = placeholderTexture(C.paper2)
     FEATURED.forEach((w, k) => {
       const s = SITES[k]
-      const p = buildPlate(w, k, gridRef(s.x, s.z), ph)
+      const p = buildPlate(w, k, gridRef(s.x, s.z), ph, this.mobile)
       p.root.renderOrder = 10
       p.mount.renderOrder = 10
       p.image.renderOrder = 11
@@ -417,6 +542,8 @@ class Work implements Chapter {
         this.fontsDrawn = true
         for (const lab of this.allLabs) this.redrawLab(lab)
         for (const p of this.plates) p.redraw()
+        // the names' measured widths changed: refit them
+        this.layDirty = true
       })
 
     window.addEventListener('resize', () => (this.layDirty = true))
@@ -430,10 +557,13 @@ class Work implements Chapter {
     document.fonts?.ready.then(() => (this.layDirty = true))
 
     // ---- screenshots: the first now, the rest once the site is revealed
+    // a phone never draws a plate's window wider than ~520 device px
     const load = (k: number) =>
-      loadScreenshot(workImage(FEATURED[k].id), { width: 960 })
+      loadScreenshot(workImage(FEATURED[k].id), { width: this.mobile ? 576 : 960 })
         .then(tex => {
           tex.anisotropy = 8
+          // static: free the decoded canvas once the GPU has it
+          releaseAfterUpload(tex)
           try {
             ctx.renderer.initTexture(tex)
           } catch {
@@ -466,25 +596,29 @@ class Work implements Chapter {
     return { g, w, h }
   }
 
-  private makeLab(draw: () => Stack, k: number, align: Align): Lab {
-    const st = draw()
+  private makeLab(draw: (align: Align) => Stack, k: number, align: Align): Lab {
+    const st = draw(align)
     const mat = new THREE.MeshBasicMaterial({ map: st.texture, transparent: true, depthWrite: false, toneMapped: false })
     const { g, w, h } = this.labGeo(st, k, align)
     const mesh = new THREE.Mesh(g, mat)
     mesh.quaternion.copy(_flat)
     mesh.renderOrder = 2
-    const lab: Lab = { mesh, mat, draw, k, align, w, h }
+    const lab: Lab = { mesh, mat, draw, k, align, w, h, pad: st.padPx }
     this.allLabs.push(lab)
     return lab
   }
 
   private redrawLab(lab: Lab) {
-    const st = lab.draw()
+    const st = lab.draw(lab.align)
     lab.mat.map?.dispose()
     lab.mat.map = st.texture
     lab.mat.needsUpdate = true
     lab.mesh.geometry.dispose()
-    lab.mesh.geometry = this.labGeo(st, lab.k, lab.align).g
+    const { g, w, h } = this.labGeo(st, lab.k, lab.align)
+    lab.mesh.geometry = g
+    lab.w = w
+    lab.h = h
+    lab.pad = st.padPx
   }
 
   // ------------------------------------------------------------------ DOM
@@ -512,7 +646,7 @@ class Work implements Chapter {
       const li = el('li', '', undefined, idx)
       li.innerHTML = `<span class="wk-key-no">${pad2(k + 1)}</span><span class="wk-key-name">${esc(w.name)}</span><span class="wk-lead"></span><span class="wk-key-ref">${gridRef(SITES[k].x, SITES[k].z)}</span>`
     })
-    el('p', 'hud-coord wk-key-foot', 'Sheet 02 · Survey · Scale 1:24,000', this.key)
+    el('p', 'hud-coord wk-key-foot', `${SHEET.name(2, 'Survey')} · Scale ${SHEET.scale}`, this.key)
 
     // one legend box per site, docked left (bottom on portrait)
     this.dock = el('div', 'wk-dock', undefined, stage)
@@ -581,7 +715,7 @@ class Work implements Chapter {
     a.rel = 'noopener'
     const s = SITES[k]
     el('span', 'hud-coord wk-host', `${pre ? 'Pre-launch build' : hostOf(w.url)} · Grid ${gridRef(s.x, s.z)}`, cta)
-    return { root, name }
+    return { root, name, ink: -1 }
   }
 
   // ------------------------------------------------------------------ layout
@@ -613,7 +747,158 @@ class Work implements Chapter {
     }
     this.rowsEdges()
     this.computePlates()
+    this.fitSiteLabels()
     return this.lay
+  }
+
+  /** CSS-px position of a world point seen from shot `sh` (into _q.x, _q.y) */
+  private proj(sh: Shot, x: number, y: number, z: number) {
+    const L = this.lay!
+    const tanH = Math.tan((sh.fov * DEG) / 2)
+    _d.subVectors(sh.tgt, sh.pos).normalize()
+    _r.crossVectors(_d, UP).normalize()
+    _u.crossVectors(_r, _d)
+    _p.set(x, y, z).sub(sh.pos)
+    const zc = Math.max(1e-3, _p.dot(_d))
+    _q.x = ((_p.dot(_r) / (zc * tanH * (L.W / Math.max(1, L.H))) + 1) / 2) * L.W
+    _q.y = ((1 - _p.dot(_u) / (zc * tanH)) / 2) * L.H
+  }
+
+  /**
+   * The screen box (CSS px: x0, x1, bottom, top) of site k's lettering seen from
+   * `sh`, set on `side` of its marker at scale `sc`, `dz` north of its home
+   * row, lying at height `y`.
+   */
+  private siteLabBox(k: number, sh: Shot, side: number, sc: number, dz: number, y: number) {
+    const s = SITES[k]
+    const lab = this.siteLabs[k]
+    const gw = (lab.w - 2 * lab.pad * lab.k) * sc
+    const hz = (lab.h / 2) * sc
+    const x0 = s.x + side * 0.6
+    const x1 = x0 + side * gw
+    const b = this.box
+    b[0] = Infinity
+    b[1] = -Infinity
+    b[2] = -Infinity
+    b[3] = Infinity
+    for (let i = 0; i < 4; i++) {
+      this.proj(sh, i < 2 ? x0 : x1, y, s.z + 0.1 - dz + (i % 2 ? hz : -hz))
+      b[0] = Math.min(b[0], _q.x)
+      b[1] = Math.max(b[1], _q.x)
+      b[2] = Math.max(b[2], _q.y)
+      b[3] = Math.min(b[3], _q.y)
+    }
+    return b
+  }
+
+  /**
+   * Fit site k's lettering inside the gutter, above `yMax` (the legend box on
+   * portrait) and below `yMin` (the plate): first nudge it north beside the
+   * marker's stem (up to `dzMax`), then shrink it. Returns the share of scale
+   * `sc` it keeps (0.5 … 1), or 0 when there is no room for it at all; the
+   * nudge lands in this.fitDz.
+   */
+  private fitOn(k: number, sh: Shot, side: number, sc: number, y: number, yMax: number, dzMax: number, yMin = -Infinity) {
+    const L = this.lay!
+    const g0 = L.safe.x0 + 8
+    const g1 = L.safe.x1 - 8
+    let t = 1
+    let dz = 0
+    for (let i = 0; i < 24 && t >= 0.5; i++) {
+      // at the dive the name lies on the relief: lifted clear of the ground under it
+      if (dzMax > 0) y = (this.fitY = this.diveLabY(k, side, sc * t, dz)) + 0.05
+      const b = this.siteLabBox(k, sh, side, sc * t, dz, y)
+      // only the name's far end counts: its near end sits at the marker —
+      // unless the marker itself is off the edge (a name cut by the frame)
+      const near = side > 0 ? b[0] : b[1]
+      if (near < 0 || near > L.W) break
+      const overX = side > 0 ? Math.max(0, b[1] - g1) : Math.max(0, g0 - b[0])
+      const overY = Math.max(0, b[2] - yMax)
+      const overT = Math.max(0, yMin - b[3])
+      if (overX < 0.5 && overY < 0.5 && overT < 0.5) {
+        this.fitDz = dz
+        return t
+      }
+      if (overY >= 0.5 && overT < 0.5 && dz < dzMax) dz = Math.min(dzMax, dz + 0.12)
+      else if (overX >= 0.5) t *= Math.max(0.3, (b[1] - b[0] - overX) / Math.max(1, b[1] - b[0]))
+      else t *= 0.9
+    }
+    this.fitDz = dz
+    // no room at all (0): on the index the name gives way to the sheet's
+    // edge; at a portrait dive, to the plate and the legend box (the plate's
+    // caption and the box both carry it). A landscape dive keeps it at half size.
+    return dzMax > 0 && !this.lay!.portrait ? 0.5 : 0
+  }
+
+  /** how high site k's name must lie to clear the relief under it at the dive (full relief) */
+  private diveLabY(k: number, side: number, sc: number, dz: number) {
+    const s = SITES[k]
+    const lab = this.siteLabs[k]
+    const w = lab.w * sc
+    const h = lab.h * sc
+    return Math.max(0, maxOver(s.x + side * (0.6 + w / 2), s.z + 0.1 - dz, w / 2, h / 2))
+  }
+
+  /**
+   * Keep each site's lettering on screen on the sheet index (as the Work nav
+   * lands, 0.12) and at its dive: portrait phones centre the marker, crop the
+   * sheet and dock the legend box close under the marker, so a name set to
+   * one side can run off the edge or under the box. Take the side with more
+   * room, nudge the name north beside the stem, and shrink it where it still
+   * would not fit.
+   */
+  private fitSiteLabels() {
+    const L = this.lay!
+    const idxA = this.shotAt(0.05, this.fitA)
+    const idxB = this.shotAt(0.12, this.fitB)
+    const tanH = Math.tan((FOV * DEG) / 2)
+    const sOf = (sh: Shot) => clamp((17 * 2 * sh.pos.distanceTo(sh.tgt) * tanH) / Math.max(1, L.H) / 0.6, SITE_DIVE_S, SITE_MAX_S)
+    const sA = sOf(idxA)
+    const sB = sOf(idxB)
+    const idxMax = L.portrait ? L.introTop - 6 : L.safe.y1
+    for (let k = 0; k < NF; k++) {
+      const dive = this.siteShot(k, 0.5, this.sb)
+      const yD = this.siteH[k] + 0.05
+      const diveMax = L.portrait ? L.cardTop[k] - 8 : L.safe.y1
+      const fr = this.siteFrame(k)
+      const diveMin = L.portrait ? fr.pcy + fr.pw / MOUNT_ASPECT / 2 + 4 : -Infinity
+      const fit = (side: number) => {
+        const tA = this.fitOn(k, idxA, side, sA, 0.1, idxMax, 0)
+        const tB = this.fitOn(k, idxB, side, sB, 0.2, idxMax, 0)
+        const tD = this.fitOn(k, dive, side, SITE_DIVE_S, yD, diveMax, 0.9, diveMin)
+        return { tA, tB, tD, dz: this.fitDz, y: this.fitY, idx: Math.min(tA, tB) }
+      }
+      const home = SITES[k].side
+      let side = home
+      let f = fit(home)
+      // landscape keeps the sheet's own lettering sides (clear of the plates
+      // lying on the chart); portrait may set a name on the roomier side —
+      // roomier at the dive first (the active site's name), then on the index
+      if (L.portrait && Math.min(f.tD, f.idx) < 0.999) {
+        const g = fit(-home)
+        if (g.tD > f.tD * 1.04 || (g.tD >= f.tD * 0.96 && g.idx > f.idx * 1.04)) {
+          side = -home
+          f = g
+        }
+      }
+      this.siteFit[k] = f.tD
+      this.siteFitA[k] = f.tA
+      this.siteFitB[k] = f.tB
+      this.siteDz[k] = f.dz
+      // the lift over the relief where the name lies at the dive
+      const lab = this.siteLabs[k]
+      const x = SITES[k].x + side * 0.6
+      this.siteLabY[k].dive[side > 0 ? 1 : 0] = f.y
+      if (side !== this.siteSide[k]) {
+        this.siteSide[k] = side
+        const align: Align = side > 0 ? 'left' : 'right'
+        for (const l of [lab, this.siteNoLabs[k]]) {
+          l.align = align
+          l.mesh.position.x = x
+          this.redrawLab(l)
+        }
+      }
+    }
   }
 
   /** where the plate + its marker go on screen for site k (CSS px) */
@@ -800,7 +1085,8 @@ class Work implements Chapter {
     this.base.uniforms.uOpacity.value = lerp(0.7, 0.45, gazV)
     // printed line weights: constant on screen; dashes sized from the view scale
     ctx.renderer.getDrawingBufferSize(this.res)
-    const wpp = (2 * this.cur.pos.distanceTo(this.cur.tgt) * Math.tan((this.cur.fov * DEG) / 2)) / Math.max(1, frame.height)
+    const dc = this.cur.pos.distanceTo(this.cur.tgt)
+    const wpp = (2 * dc * Math.tan((this.cur.fov * DEG) / 2)) / Math.max(1, frame.height)
     for (const r of this.lines) {
       r.uniforms.uLift.value = lift
       r.uniforms.uYOff.value = 0.04
@@ -829,19 +1115,46 @@ class Work implements Chapter {
 
     // ---- lettering
     const introLab = 1 - smoothstep(DIVE_A, DIVE_B, l)
-    // lettering reads a size larger from the overview heights
-    const ov = Math.max(1 - smoothstep(DIVE_A, DIVE_B, l), smoothstep(F1, GZ_B, l))
-    const labS = lerp(0.56, 1.3, 1 - smoothstep(0.6, 1, 1 - ov)) * lerp(1, 0.78, smoothstep(F1, GZ_B, l))
+    // Map lettering keeps a readable size on screen from the overview heights
+    // (scaled by the camera's distance: ~17 px names on the index, ~14 px on
+    // the gazetteer's sheet) and settles to its world size up close; capped so
+    // the names never crowd the sheet on small screens.
+    const labS = clamp((lerp(17, 14, gazV) * wpp) / 0.6, SITE_DIVE_S, SITE_MAX_S)
+    const labO = clamp((16 * wpp) / 0.84, 1, OTHER_MAX_S)
+    // up close: the 'SITE 0N' line shows only once the drone is down at the sites
+    const noV = 1 - smoothstep(20, 36, dc)
     for (let k = 0; k < NF; k++) {
-      this.siteLabs[k].mesh.scale.setScalar(labS)
+      const lab = this.siteLabs[k]
+      const twin = this.siteNoLabs[k]
+      // a name shrinks where it would run past the gutter (portrait phones),
+      // and stands down at the dive where there's no room for it at all
+      const fitD = this.siteFit[k]
+      const fA = this.siteFitA[k]
+      const fB = this.siteFitB[k]
+      const wB = smoothstep(0.05, 0.12, l)
+      const fitI = l < 0.5 ? lerp(fA || 0.5, fB || 0.5, wB) : 1
+      const sc = labS * lerp(fitI, fitD || 0.5, noV)
+      // names with no room stand down: on the index at the sheet's edge, at the dive between plate and box
+      const roomI = l < 0.5 ? 1 - lerp(fA ? 0 : 1, fB ? 0 : 1, wB) : 1
+      const room = lerp(roomI, fitD ? 1 : 0, noV)
+      lab.mesh.scale.setScalar(sc)
+      twin.mesh.scale.setScalar(sc)
       const labV = smoothstep(0.026 + k * 0.004, 0.042 + k * 0.004, l)
       const activeV = k === hk ? ha : 0
-      const v = labV * lerp(Math.max(lerp(0.95, 0.6, 1 - introLab), activeV), 0.42, gazV)
-      this.siteLabs[k].mat.opacity = v
+      const v = labV * lerp(Math.max(lerp(0.95, 0.6, 1 - introLab), activeV), 0.42, gazV) * room
+      lab.mat.opacity = v
+      twin.mat.opacity = v * noV
+      const ly = this.siteLabY[k]
+      const sd = this.siteSide[k] > 0 ? 1 : 0
+      const y = lerp(ly.idx[sd], ly.dive[sd], noV)
+      this.labY.set(lab, y)
+      this.labY.set(twin, y)
+      lab.mesh.position.z = twin.mesh.position.z = SITES[k].z + 0.1 - this.siteDz[k] * noV
     }
     for (let j = 0; j < NR; j++) {
       const a = GZ_IN + 0.01 + j * 0.0035
       this.otherLabs[j].mat.opacity = smoothstep(a, a + 0.02, l) * (1 - smoothstep(OUT_A, 0.985, l))
+      this.otherLabs[j].mesh.scale.setScalar(labO)
     }
     for (const lab of this.waterLabs) lab.mat.opacity = smoothstep(0.02, 0.045, l) * lerp(0.9, 0.6, gazV)
     for (const lab of this.gridLabs) lab.mat.opacity = gazV
@@ -852,12 +1165,39 @@ class Work implements Chapter {
       lab.mesh.visible = lab.mat.opacity > 0.003
     }
 
-    // ---- plates
-    for (let k = 0; k < NF; k++) this.updatePlate(k, l, lift)
+    // ---- plates. The print is paced in wall-clock time (frame.dt stalls in
+    // the engine's quiet frames under Motion off, which would freeze a fade)
+    const now = performance.now()
+    const dt = this.lastT > 0 ? Math.min(0.1, Math.max(0, (now - this.lastT) / 1000)) : frame.dt
+    this.lastT = now
+    const inkFresh = this.fresh
+    if (this.fresh) {
+      // (re)entering the chapter: every plate starts as its paper face
+      this.fresh = false
+      this.dev.fill(0)
+      this.vis.fill(1)
+      for (let k = 0; k < NF; k++) {
+        this.rise[k] = riseOf(k, l)
+        this.lifting[k] = this.rise[k] > 0 ? 1 : 0
+      }
+      this.steadyFor = 0
+      this.moving = 0
+    }
+    const speed = Math.abs(frame.velocity)
+    this.steadyFor = speed < STEADY_V ? this.steadyFor + dt : 0
+    const steady = this.steadyFor >= STEADY_T
+    // scrolling on, the drone flies straight past: the plates stay down on the
+    // chart (a big paper plate swinging in and out two, three times a second
+    // over the darker relief would flash); they lift where it slows
+    const liftOK = speed < LIFT_V
+    const wash = WASH.max * smoothstep(WASH.from, WASH.to, speed)
+    if (wash > ctx.post.fade) ctx.post.fade = wash
+    this.moving = approach(this.moving, smoothstep(SHADE.from, SHADE.to, speed), dt, SHADE.rate)
+    u.uShade.value = lerp(SHADE.full, SHADE.moving, this.moving)
+    for (let k = 0; k < NF; k++) this.updatePlate(k, l, lift, dt, steady, still, liftOK)
 
     // ---- world: fog so distant land fades into the paper margin
     const wp = ctx.world.params
-    const dc = this.cur.pos.distanceTo(this.cur.tgt)
     wp.fogNear = dc * 1.5
     wp.fogFar = dc * 3.8
 
@@ -873,10 +1213,36 @@ class Work implements Chapter {
     reveal(this.intro, introV, 0)
     reveal(this.key, introV, 0)
     setRise(this.introTitle, l > 0.026 && l < 0.14)
+    // the copy: one box at a time, paced in time (see cardPanel)
+    let tk = -1
+    let tInk = 0.001
     for (let k = 0; k < NF; k++) {
-      const v = cardV(k, l)
-      reveal(this.cards[k].root, v, 10)
-      setRise(this.cards[k].name, v > 0.3)
+      const v = cardInk(k, l)
+      if (v > tInk) {
+        tInk = v
+        tk = k
+      }
+    }
+    if (inkFresh) {
+      this.dockCard = tk
+      this.dockInk = tk >= 0 ? tInk : 0
+    } else if (this.dockCard !== tk) {
+      this.dockInk = approach(this.dockInk, 0, dt, INK_RATE)
+      if (this.dockInk < 0.04) {
+        this.dockInk = 0
+        this.dockCard = tk
+      }
+    } else if (tk >= 0) this.dockInk = approach(this.dockInk, tInk, dt, INK_RATE)
+    for (let k = 0; k < NF; k++) {
+      const c = this.cards[k]
+      reveal(c.root, cardPanel(k, l), 10)
+      const ink = k === this.dockCard ? Math.round(this.dockInk * 200) / 200 : 0
+      if (ink !== c.ink) {
+        c.ink = ink
+        c.root.style.setProperty('--wk-ink', String(ink))
+        c.root.classList.toggle('is-blank', ink < 0.005)
+      }
+      setRise(c.name, ink > 0.3)
     }
     const gv = smoothstep(GZ_IN, GZ_IN + 0.016, l) * (1 - smoothstep(GZ_OUT - 0.002, GZ_OUT + 0.008, l))
     reveal(this.gazDock, gv, 10)
@@ -884,10 +1250,13 @@ class Work implements Chapter {
     setRise(this.gazTitle, gv > 0.35)
   }
 
-  private updatePlate(k: number, l: number, lift: number) {
+  private updatePlate(k: number, l: number, lift: number, dt: number, steady: boolean, calm: boolean, liftOK: boolean) {
     const p = this.plates[k]
     const s = SITES[k]
-    const r = riseOf(k, l)
+    const ro = riseOf(k, l)
+    if (ro <= 0.001) this.lifting[k] = 0
+    else if (liftOK) this.lifting[k] = 1
+    const r = (this.rise[k] = approach(this.rise[k], this.lifting[k] ? ro : 0, dt, LIFT_RATE))
     const e = ease.inOutCubic(r)
     const a = this.act[k]
     // rest: flat on the chart beside the site
@@ -900,17 +1269,35 @@ class Work implements Chapter {
     const up = r > 0.02
     p.mountMat.depthTest = !up
     p.imageMat.depthTest = !up
-    const dev = developOf(k, l)
-    p.imageMat.uniforms.uDevelop.value = dev
-    p.image.visible = dev > 0.001
-    p.shadowMat.opacity = 0.55 * smoothstep(0.1, 0.6, r)
-    p.shadow.visible = p.shadowMat.opacity > 0.003
+    // the print: develops only while the drone holds over the site, paced in
+    // time; never un-prints in place (see the header)
+    let dev = this.dev[k]
+    let vis = this.vis[k]
+    if (holding(k, l) && r > 0.5) {
+      // starts once the plate faces the drone and the scroll has settled
+      const go = steady && r > 0.9
+      if (dev === 0 && go) this.wipe[k] = calm ? 0 : 1
+      dev = approach(dev, dev > 0 || go ? 1 : 0, dt)
+      vis = approach(vis, 1, dt)
+    } else {
+      vis = approach(vis, dev > 0 ? 0 : 1, dt)
+      if (vis === 0) dev = 0
+    }
+    this.dev[k] = dev
+    this.vis[k] = vis
+    const u = p.imageMat.uniforms
+    u.uDevelop.value = dev
+    u.uWipe.value = this.wipe[k]
     // intro: the sheet-index faces print in with the chart
     const inV = smoothstep(0.024 + k * 0.004, 0.04 + k * 0.004, l)
-    p.root.visible = inV > 0.001
-    p.mountMat.opacity = inV
+    u.uAlpha.value = vis * inV
+    p.image.visible = dev > 0.001 && vis * inV > 0.003
+    p.shadowMat.opacity = 0.55 * smoothstep(0.1, 0.6, r) * vis
+    p.shadow.visible = p.shadowMat.opacity > 0.003
+    p.root.visible = inV * vis > 0.001
+    p.mountMat.opacity = inV * vis
     // leaders: plate's bottom corners → the marker head
-    const lv = smoothstep(0.55, 0.95, r)
+    const lv = smoothstep(0.55, 0.95, r) * vis
     p.leaderMat.opacity = 0.75 * lv
     p.leaders.visible = lv > 0.003
     if (p.leaders.visible) {
@@ -967,6 +1354,10 @@ class Work implements Chapter {
       out.position.y += Math.sin(t * 0.42) * 0.045 * k
       out.position.x += Math.sin(t * 0.27 + 1.3) * 0.035 * k
     }
+  }
+
+  onEnter() {
+    this.fresh = true
   }
 
   onLeave() {

@@ -13,7 +13,7 @@ import { mulberry32 } from '../../kit/noise'
  *                 has been heard, the rings settle into a static blue trace
  *                 (uTrace) around the station, like water-lining.
  *   letterPlane() map lettering that is LETTERED IN left → right (uReveal)
- *   soundings()   scattered depth figures (italic, fathoms + a subscript
+ *   soundings()   scattered depth figures (italic, meters + a subscript
  *                 fraction under ten) as one InstancedMesh over an atlas
  *
  * All flat printed colour, premultiplied alpha, fading into the paper with
@@ -118,6 +118,11 @@ export interface Letter {
   /** world width / height of the plane */
   width: number
   height: number
+  /**
+   * the letters' own box (no halo padding), mesh-local: x0..x1 along x from
+   * the mesh origin, ±hz about it in z. For knocking linework out beneath.
+   */
+  ink: { x0: number; x1: number; hz: number }
   u: { uReveal: { value: number }; uOpacity: { value: number } }
   /** redraw (after late fonts) */
   redraw(): void
@@ -170,12 +175,25 @@ export function letterPlane(world: World, text: string, o: LabelOptions & { heig
   geo.translate(shift, 0, 0)
   geo.rotateX(-Math.PI / 2)
   const mesh = new THREE.Mesh(geo, mat)
-  // lettering prints last: its halo knocks out the rings and the survey track beneath
+  // lettering prints last: its halo knocks the rings out around each glyph
   mesh.renderOrder = 6
+  // the letters' box inside the canvas: labelTexture pads each side by the halo
+  // plus a fifth of the (2x) em, and centres a line one em tall
+  const cvH = (texture.image as HTMLCanvasElement).height || 1
+  const em = (o.size ?? 48) * 2
+  const pad = Math.ceil((o.haloWidth ?? 0.22) * em + em * 0.2)
+  const perPx = h / cvH
+  const ink = {
+    x0: shift - w / 2 + pad * perPx,
+    x1: shift + w / 2 - pad * perPx,
+    // mixed case with ascenders + descenders spans about an em; capitals about 0.72
+    hz: em * perPx * (o.uppercase ? 0.37 : 0.52),
+  }
   return {
     mesh,
     width: w,
     height: h,
+    ink,
     u: uniforms,
     redraw() {
       const next = labelTexture(text, o)
@@ -191,13 +209,77 @@ export function letterPlane(world: World, text: string, o: LabelOptions & { heig
   }
 }
 
+/* ------------------------------------------------------------------ knock-out */
+
+/** how many lettered boxes a route can be knocked out under */
+export const KNOCK_MAX = 16
+
+export interface Knock {
+  /** world rects (x0, z0, x1, z1); unused entries lie far off the chart */
+  rects: THREE.Vector4[]
+  /** 0..1 per rect: how far the knock-out has printed (follow the lettering's reveal) */
+  k: number[]
+}
+
+export function makeKnock(): Knock {
+  return {
+    rects: Array.from({ length: KNOCK_MAX }, () => new THREE.Vector4(1e5, 1e5, 1e5, 1e5)),
+    k: new Array<number>(KNOCK_MAX).fill(0),
+  }
+}
+
+/**
+ * GLSL: knockOut(p) = 0 inside every (printed) lettered box, 1 clear of them
+ * all, soft over a fifth of a unit outside each box. Bind the uniforms with
+ * bindKnock(). Constant loop, no derivatives: callable anywhere.
+ */
+export const KNOCK_GLSL = /* glsl */ `
+  uniform vec4 uKnock[${KNOCK_MAX}];
+  uniform float uKnockK[${KNOCK_MAX}];
+  float knockOut(vec2 p) {
+    float m = 1.0;
+    for (int i = 0; i < ${KNOCK_MAX}; i++) {
+      vec4 r = uKnock[i];
+      vec2 q = max(abs(p - (r.xy + r.zw) * 0.5) - (r.zw - r.xy) * 0.5, 0.0);
+      m = min(m, mix(1.0, smoothstep(0.0, 0.2, length(q)), uKnockK[i]));
+    }
+    return m;
+  }
+`
+
+export function bindKnock(mat: THREE.ShaderMaterial, knock: Knock) {
+  mat.uniforms.uKnock = { value: knock.rects }
+  mat.uniforms.uKnockK = { value: knock.k }
+}
+
+/**
+ * Knock a route ribbon (kit routeRibbon) out under lettered boxes, as a
+ * printed chart does: the line's alpha falls to 0 inside each rect, scaled
+ * by knock.k. Splices the ribbon's own ShaderMaterial; if the kit's shader
+ * text ever changes shape, the splice is skipped and the plain route
+ * remains. Returns whether it applied.
+ */
+export function knockRoute(mat: THREE.ShaderMaterial, knock: Knock): boolean {
+  const vsA = 'varying float vSide;'
+  const vsB = 'gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);'
+  const fsA = 'float a = dash * drawn * edge * uOpacity;'
+  const vs = mat.vertexShader
+  const fs = mat.fragmentShader
+  if (!vs.includes(vsA) || !vs.includes(vsB) || !fs.includes(vsA) || !fs.includes(fsA)) return false
+  mat.vertexShader = vs.replace(vsA, `${vsA}\n      varying vec2 vXZ;`).replace(vsB, `vXZ = (modelMatrix * vec4(position, 1.0)).xz;\n        ${vsB}`)
+  mat.fragmentShader = fs.replace(vsA, `${vsA}\n      varying vec2 vXZ;\n${KNOCK_GLSL}`).replace(fsA, `${fsA}\n        a *= knockOut(vXZ);`)
+  bindKnock(mat, knock)
+  mat.needsUpdate = true
+  return true
+}
+
 /* ------------------------------------------------------------------ soundings */
 
 export interface Sounding {
   x: number
   z: number
-  /** fathoms */
-  fm: number
+  /** depth, meters */
+  m: number
   /** 0..1 order of printing (reveal) */
   t: number
 }
@@ -207,14 +289,14 @@ const ROWS = 16
 const CW = 128
 const CH = 64
 
-/** "7₄" under ten fathoms (a subscript tenth), whole fathoms above */
-function soundingText(fm: number): [string, string] {
-  if (fm < 10) {
-    const whole = Math.max(1, Math.floor(fm))
-    const tenth = Math.floor((fm - Math.floor(fm)) * 10)
+/** "7₄" = 7.4 m: under ten meters a subscript tenth (decimeters), whole meters above */
+function soundingText(m: number): [string, string] {
+  if (m < 10) {
+    const whole = Math.floor(m)
+    const tenth = Math.floor((m - whole) * 10)
     return [String(whole), tenth > 0 ? String(tenth) : '']
   }
-  return [String(Math.round(fm)), '']
+  return [String(Math.round(m)), '']
 }
 
 function drawAtlas(cv: HTMLCanvasElement, keys: string[]) {
@@ -256,7 +338,7 @@ export function soundings(world: World, list: Sounding[], size: number): Soundin
   const keys: string[] = []
   const index = new Map<string, number>()
   const cell = list.map(s => {
-    const [a, b] = soundingText(s.fm)
+    const [a, b] = soundingText(s.m)
     const k = `${a}|${b}`
     let i = index.get(k)
     if (i === undefined && keys.length < COLS * ROWS) {
@@ -363,7 +445,8 @@ export function scatterSoundings(
     z1: number
     step: number
     minDepth: number
-    fathoms: number
+    /** meters of depth per height unit */
+    meters: number
     /** discs [x, z, r] */
     keepOut: [number, number, number][]
     /** rectangles [x0, z0, x1, z1] */
@@ -393,7 +476,7 @@ export function scatterSoundings(
         if (jx > ax && jx < bx && jz > az && jz < bz) ok = false
       }
       if (!ok) continue
-      out.push({ x: jx, z: jz, fm: -h * o.fathoms, t })
+      out.push({ x: jx, z: jz, m: -h * o.meters, t })
     }
   }
   return out

@@ -3,11 +3,11 @@ import type { CameraPose, Chapter, ChapterContext, Frame } from '../../core/type
 import { el, reveal, rise, setRise } from '../../core/dom'
 import { clamp, lerp, segment, smoothstep } from '../../core/math'
 import { nextFrame } from '../../core/yield'
-import { SECURITY, STATS } from '../../content'
+import { SECURITY, SHEET, STATS } from '../../content'
 import { C, chartMaterial, ensureFonts, mapLabel, marker, type ChartMaterial } from '../../kit/chart'
-import { terrainGeometry, heightRange, type HeightFn } from '../../kit/terrain'
+import { terrainGeometryAsync, heightRange, type HeightFn } from '../../kit/terrain'
 import { FN, pressureAt, weatherMaterial, type Field, type WeatherUniforms } from './weather'
-import { SHEET, SITE, makeLand } from './land'
+import { BOUNDS, SEA, SITE, makeLand } from './land'
 import { radarDisc, type RadarUniforms } from './radar'
 import './shield.css'
 
@@ -21,16 +21,18 @@ import './shield.css'
  *                       (semicircles) draw themselves out of it and sweep
  *                       in; the paper greys toward a storm tint and the
  *                       land is pressed flat. Eyebrow + "Hacked?" from 0.06.
- *   0.30–0.60  BREATHE  "Breathe." + the body (the 0.45 landing): the
+ *   0.30–0.58  BREATHE  "Breathe." + the body (the 0.45 landing): the
  *                       pressure equalizes — isobars relax into wide calm
  *                       curves, the fronts break up and fade, the L becomes
  *                       an H (fair weather), the plum drains back to paper
  *                       and ink, and the land breathes back up into relief
  *                       as the drone tilts from the chart view to oblique.
- *   0.60–0.95  STEADY   fair weather: range rings, bearing ticks and a slow
+ *   0.58–0.95  STEADY   fair weather: range rings, bearing ticks and a slow
  *                       radar sweep around the site (24/7 watch; contours
  *                       it passes print vermilion); 24/7 + label + CTA
- *                       (anchor 0.8).
+ *                       draw on as the body leaves (anchor 0.8). On tall
+ *                       screens the chart fades back into the paper behind
+ *                       "24/7" (the weather overprint's veil).
  *
  * Everything derives from `local`; frame.time only turns the sweep, drifts
  * the rings and slowly turns the storm (all off under reduced motion /
@@ -50,7 +52,7 @@ const T = {
   morph1: 0.47,
   lift0: 0.34,
   lift1: 0.62,
-  handoff: 0.61,
+  handoff: 0.58,
   watch0: 0.58,
   watch1: 0.7,
   out: 0.94,
@@ -64,8 +66,20 @@ const TAU = Math.PI * 2
 const P0 = new THREE.Vector2(7, 15)
 const P1 = new THREE.Vector2(-10, 10)
 const P2 = new THREE.Vector2(-2.3, 2.5)
-/** where the fair-weather high settles (north-west of the site, over the sound) */
-const HIGH = new THREE.Vector2(-4.4, -3.6)
+/** where the fair-weather high settles (north-west of the site, over the sound; clear of the copy on wide screens) */
+const HIGH = new THREE.Vector2(-4.0, -2.5)
+/** "The Sound" (site-relative): west of the headland on wide screens, south of it on tall ones */
+const SOUND_WIDE = new THREE.Vector2(-7.4, -0.5)
+const SOUND_TALL = new THREE.Vector2(-2.8, 6.9)
+
+/** the fair-weather field the chapter settles into (the readout reports its high) */
+const FAIR: Field = {
+  low: new THREE.Vector4(0, 0, 0, 3),
+  lowS: new THREE.Vector4(0, 3.4, 1, 0),
+  high: new THREE.Vector4(SITE.x + HIGH.x, SITE.z + HIGH.y, 15, 6.2),
+  field: new THREE.Vector4(0.16, 0.34, 1014, 1.1),
+}
+const P_HIGH = pressureAt(FAIR, SITE.x + HIGH.x, SITE.z + HIGH.y)
 
 // ------------------------------------------------------------------ camera
 
@@ -115,6 +129,9 @@ const _Y = new THREE.Vector3(0, 1, 0)
 
 /** yaw of the current pose (labels and the letter turn with it to stay upright) */
 let poseYaw = 0
+/** the solved pose's half-extents (tan of the half fov, vertical and horizontal) */
+let poseTanV = 1
+let poseTanX = 1
 
 function solvePose(l: number, frame: Frame, out: CameraPose) {
   keyAt(l, _key)
@@ -135,6 +152,8 @@ function solvePose(l: number, frame: Frame, out: CameraPose) {
   const oy = tall ? 0.36 : -0.02
   const tanV = Math.tan(THREE.MathUtils.degToRad(fov / 2))
   const tanX = tanV * aspect
+  poseTanV = tanV
+  poseTanX = tanX
   _dir.set(Math.sin(yaw) * Math.cos(pitch), Math.sin(pitch), Math.cos(yaw) * Math.cos(pitch))
   _fwd.copy(_dir).negate()
   _right.crossVectors(_fwd, _Y).normalize()
@@ -165,6 +184,24 @@ function letterScale(frame: Frame) {
 }
 
 const inOut = (t: number) => 0.5 - 0.5 * Math.cos(Math.PI * clamp(t))
+
+const _p = new THREE.Vector3()
+/** NDC of the last projected point */
+const _s = { x: 0, y: 0 }
+/** project a world point under the pose solved last (camera at `cam`) into _s */
+function project(cam: THREE.Vector3, x: number, y: number, z: number) {
+  _p.set(x - cam.x, y - cam.y, z - cam.z)
+  const d = Math.max(0.1, _p.dot(_fwd))
+  _s.x = _p.dot(_right) / (d * poseTanX)
+  _s.y = _p.dot(_up) / (d * poseTanV)
+}
+
+interface Box {
+  x0: number
+  y0: number
+  x1: number
+  y1: number
+}
 
 /** quadratic Bézier on the storm track */
 function track(s: number, out: THREE.Vector2) {
@@ -210,6 +247,7 @@ export default function create(): Chapter {
   let siteLabel: THREE.Mesh | null = null
   let siteLabelW = 1
   let soundLabel: THREE.Mesh | null = null
+  let soundW = 1
   const isoLabels: IsoLabel[] = []
   const field: Field = {
     low: new THREE.Vector4(),
@@ -219,7 +257,13 @@ export default function create(): Chapter {
   }
   const siteH = { v: 0 }
 
-  /** the highest ground under a flat label (so relief never swallows its letters) */
+  /** the chart's surface at full lift: land as it stands, the sea floor sunk by SEA of its depth */
+  const surf = (x: number, z: number) => {
+    const h = height(x, z)
+    return h > 0 ? h : h * SEA
+  }
+
+  /** the highest surface under a flat label (so relief never swallows its letters) */
   function groundTop(x: number, z: number, w: number, d: number, yaw: number) {
     const cy = Math.cos(yaw)
     const sy = Math.sin(yaw)
@@ -227,10 +271,10 @@ export default function create(): Chapter {
     const az = (-sy * w) / 2
     const bx = (-sy * d) / 2
     const bz = (-cy * d) / 2
-    let m = height(x, z)
-    m = Math.max(m, height(x + ax + bx, z + az + bz), height(x + ax - bx, z + az - bz))
-    m = Math.max(m, height(x - ax + bx, z - az + bz), height(x - ax - bx, z - az - bz))
-    m = Math.max(m, height(x + ax, z + az), height(x - ax, z - az))
+    let m = surf(x, z)
+    m = Math.max(m, surf(x + ax + bx, z + az + bz), surf(x + ax - bx, z + az - bz))
+    m = Math.max(m, surf(x - ax + bx, z - az + bz), surf(x - ax - bx, z - az - bz))
+    m = Math.max(m, surf(x + ax, z + az), surf(x - ax, z - az))
     return m
   }
 
@@ -259,6 +303,7 @@ export default function create(): Chapter {
   // DOM
   let copyA: HTMLElement
   let eyebrow: HTMLElement
+  let titleA: HTMLElement
   let line1: HTMLElement
   let line2: HTMLElement
   let panelA: HTMLElement
@@ -270,6 +315,49 @@ export default function create(): Chapter {
   let readT: HTMLElement
   let readK: HTMLElement
   let lastRead = -1
+
+  // the copy's layout boxes in CSS px (re-measured after a resize or a font load): the veil
+  // sits behind "24/7" on tall screens, and "The Sound" keeps clear of the copy on screen
+  const veilPx: Box = { x0: 0, y0: 0, x1: 0, y1: 0 }
+  /** eyebrow + heading, the body panel, the steady copy */
+  const rects: Box[] = [0, 1, 2].map(() => ({ x0: 0, y0: 0, x1: 0, y1: 0 }))
+  const rectW = [0, 0, 0]
+  let layDirty = true
+  const boxOf = (b: Box, x: number, y: number, w: number, h: number) => {
+    b.x0 = x
+    b.y0 = y
+    b.x1 = x + w
+    b.y1 = y + h
+  }
+  function measureLayout() {
+    layDirty = false
+    const ax = copyA.offsetLeft
+    const ay = copyA.offsetTop
+    const headW = Math.max(eyebrow.offsetLeft + eyebrow.offsetWidth, titleA.offsetLeft + titleA.offsetWidth)
+    boxOf(rects[0], ax, ay, headW, titleA.offsetTop + titleA.offsetHeight)
+    boxOf(rects[1], ax + panelA.offsetLeft, ay + panelA.offsetTop, panelA.offsetWidth, panelA.offsetHeight)
+    boxOf(rects[2], copyB.offsetLeft, copyB.offsetTop, copyB.offsetWidth, copyB.offsetHeight)
+    boxOf(veilPx, copyB.offsetLeft + stat.offsetLeft, copyB.offsetTop + stat.offsetTop, stat.offsetWidth, stat.offsetHeight)
+  }
+
+  // "The Sound": its screen box (CSS px) for a baseline centre (x, y, z)
+  const lb: Box = { x0: 0, y0: 0, x1: 0, y1: 0 }
+  const lbl = { ex: 1, ez: 0, ux: 0, uz: -1, half: 1, hh: 0.5 }
+  function labelBox(cam: THREE.Vector3, x: number, y: number, z: number, W: number, H: number) {
+    lb.x0 = lb.y0 = Infinity
+    lb.x1 = lb.y1 = -Infinity
+    for (let i = 0; i < 4; i++) {
+      const sa = i & 1 ? 1 : -1
+      const sb = i & 2 ? 1 : -1
+      project(cam, x + lbl.ex * lbl.half * sa + lbl.ux * lbl.hh * sb, y, z + lbl.ez * lbl.half * sa + lbl.uz * lbl.hh * sb)
+      const px = ((_s.x + 1) / 2) * W
+      const py = ((1 - _s.y) / 2) * H
+      lb.x0 = Math.min(lb.x0, px)
+      lb.x1 = Math.max(lb.x1, px)
+      lb.y0 = Math.min(lb.y0, py)
+      lb.y1 = Math.max(lb.y1, py)
+    }
+  }
 
   const scratch: CameraPose = { position: new THREE.Vector3(), target: new THREE.Vector3(), fov: 40, roll: 0, parallax: 0 }
 
@@ -293,6 +381,7 @@ export default function create(): Chapter {
       copyA = el('div', 'sh-a', undefined, stage)
       eyebrow = el('p', 'hud-eyebrow sh-eyebrow', SECURITY.eyebrow, copyA)
       const h = el('h2', 'hud-title sh-title', undefined, copyA)
+      titleA = h
       line1 = rise(el('span', 'sh-line', undefined, h), 'Hacked?')
       line2 = rise(el('span', 'sh-line', undefined, h), '<em>Breathe.</em>')
       panelA = el('div', 'hud-panel sh-panel', undefined, copyA)
@@ -308,7 +397,8 @@ export default function create(): Chapter {
       // the chart's legend (decorative marginalia)
       legend = el('div', 'hud-panel hud-panel--quiet sh-legend', undefined, stage)
       legend.setAttribute('aria-hidden', 'true')
-      el('p', 'hud-label sh-legend-title', 'Surface analysis', legend)
+      el('p', 'hud-label sh-legend-title', SHEET.name(5, 'Pressure'), legend)
+      el('p', 'sh-legend-sub', 'Surface analysis', legend)
       const ul = el('ul', 'sh-keys', undefined, legend)
       legendRow(
         ul,
@@ -346,13 +436,23 @@ export default function create(): Chapter {
       reveal(copyB, 0)
       reveal(legend, 0, 0)
 
+      const dirty = () => (layDirty = true)
+      window.addEventListener('resize', dirty)
+      if (typeof ResizeObserver !== 'undefined') {
+        const ro = new ResizeObserver(dirty)
+        ro.observe(copyA)
+        ro.observe(copyB)
+        ro.observe(stat)
+      }
+      document.fonts?.ready.then(dirty)
+
       // ---------------- the land
       height = makeLand(23)
-      const geo = terrainGeometry({
-        width: SHEET.width,
-        depth: SHEET.depth,
-        cx: SHEET.cx,
-        cz: SHEET.cz,
+      const geo = await terrainGeometryAsync({
+        width: BOUNDS.width,
+        depth: BOUNDS.depth,
+        cx: BOUNDS.cx,
+        cz: BOUNDS.cz,
         seg: mobile ? 130 : 200,
         detail: mobile ? 2 : 3,
         height,
@@ -370,6 +470,8 @@ export default function create(): Chapter {
         grid: 0.3,
         gridSize: 4,
         lift: 0.3,
+        // the sea stays nearly level as the land rises (water lettering and the H sit on it)
+        seaLift: SEA,
         edge: 7,
       })
       chart.uniforms.uWaterDeep.value.copy(deepBase)
@@ -408,6 +510,7 @@ export default function create(): Chapter {
       siteLabel.renderOrder = 3
       group.add(siteLabel)
       soundLabel = mapLabel('The Sound', { font: 'display', size: 56, italic: true, color: C.coast, tracking: 0.16, height: 0.95, flat: true, halo: null })
+      soundW = (soundLabel.geometry as THREE.PlaneGeometry).parameters.width
       group.add(soundLabel)
       // isobar numbers along two rays (low: toward the sound; high: below the H)
       const specs: [number, boolean, number][] = [
@@ -453,6 +556,12 @@ export default function create(): Chapter {
       const rise01 = inOut(segment(l, T.lift0, T.lift1))
       const watch = smoothstep(T.watch0, T.watch1, l)
       const lift = lerp(lerp(0.3, 0.06, s), 1, rise01)
+      const W = Math.max(1, frame.width)
+      const H = Math.max(1, frame.height)
+      const tall = H > W * 1.05
+      // the copy handoff: the steady copy draws on as the body leaves (no copy-less stretch)
+      const inA = smoothstep(0.055, 0.075, l) * (1 - smoothstep(T.handoff - 0.022, T.handoff - 0.002, l))
+      const inB = smoothstep(T.handoff - 0.012, T.handoff + 0.008, l) * (1 - smoothstep(T.out, T.out + 0.02, l))
 
       // camera (solved here too so labels and the letter can turn with it)
       const camDist = solvePose(l, frame, scratch)
@@ -519,7 +628,9 @@ export default function create(): Chapter {
         frontLine(u.uWarm.value, lowC.x, lowC.y, phi, 0.35, 8.5)
         frontLine(u.uCold.value, lowC.x, lowC.y, phi + 1.75, 0.75, 10.5)
         const fr = segment(l, T.fronts0, T.fronts1)
-        u.uFront.value.set(inOut(fr), inOut(segment(l, T.fronts0 + 0.03, T.fronts1 + 0.02)), diss, smoothstep(T.fronts0 - 0.01, T.fronts0 + 0.02, l))
+        // the gate closes once the fronts have dissolved: the shader then skips both polyline searches
+        const frontsOn = diss >= 0.999 ? 0 : smoothstep(T.fronts0 - 0.01, T.fronts0 + 0.02, l)
+        u.uFront.value.set(inOut(fr), inOut(segment(l, T.fronts0 + 0.03, T.fronts1 + 0.02)), diss, frontsOn)
 
         // the letter: L at the low → H at the high, turning with the view to stay upright
         const lx = lowC.x
@@ -570,7 +681,8 @@ export default function create(): Chapter {
             }
             prev = cur
           }
-          const sys = L.low ? wash * (1 - diss) : smoothstep(0.46, 0.6, l) * (1 - smoothstep(0.97, 1, l))
+          // (tall screens letter the high's inner isobar only: the outer one would crowd the water name)
+          const sys = L.low ? wash * (1 - diss) : tall && L.level === 1020 ? 0 : smoothstep(0.46, 0.6, l) * (1 - smoothstep(0.97, 1, l))
           const knockR = scale * 1.6
           let vis = found > 0 ? sys * smoothstep(knockR * (L.low ? 1 : 0.9), knockR * (L.low ? 1 : 0.9) + 0.4, found) * (1 - smoothstep(9, 11, found)) : 0
           if (!L.low && found > 0) vis *= 1
@@ -584,18 +696,36 @@ export default function create(): Chapter {
           g.set(x, z, (L.w * 0.5 + 0.08) * ls, vis > 0.01 ? Math.min(1, vis * 1.5) : 0)
         }
 
-        // the central-pressure readout (only touch the DOM when it changes)
-        const inLow = morph < 0.5
-        const pc = inLow ? pCentre : pressureAt(field, field.high.x, field.high.y)
+        // the central-pressure readout follows the letter: the low's centre as
+        // it deepens and fills, crossing 1013 hPa just as the L turns into an
+        // H, then the high it settles into; the key comes from the value
+        // (only touch the DOM when it changes)
+        const pc = morph < 0.5 ? lerp(pCentre, 1012, morph * 2) : lerp(1014, P_HIGH, (morph - 0.5) * 2)
         const pr = Math.round(pc)
-        const tr = l < T.breathe ? 0 : l < T.handoff ? 1 : 2
-        const key = (inLow ? 1 : 2) * 100000 + tr * 10000 + pr
+        const high = pr >= 1013
+        const tr = l < T.breathe ? 0 : l < T.morph1 ? 1 : 2
+        const key = (high ? 2 : 1) * 100000 + tr * 10000 + pr
         if (key !== lastRead) {
           lastRead = key
-          readK.textContent = inLow ? 'Low' : 'High'
+          readK.textContent = high ? 'High' : 'Low'
           readP.textContent = String(pr)
           readT.textContent = TRENDS[tr]
         }
+
+        // the veil: on tall screens the chart fades back into the paper behind "24/7"
+        const vk = tall ? 0.88 * inB : 0
+        if (vk > 0.001) {
+          if (layDirty) measureLayout()
+          const pad = 6
+          const fea = clamp(0.06 * Math.min(W, H), 22, 56)
+          u.uVeil.value.set(
+            ((veilPx.x0 - pad) / W) * 2 - 1,
+            1 - ((veilPx.y1 + pad) / H) * 2,
+            ((veilPx.x1 + pad) / W) * 2 - 1,
+            1 - ((veilPx.y0 - pad) / H) * 2,
+          )
+          u.uVeilK.value.set(vk, (2 * fea) / W, (2 * fea) / H, 0)
+        } else u.uVeilK.value.x = 0
       }
 
       // ---------------- your site
@@ -614,24 +744,90 @@ export default function create(): Chapter {
         ;(siteLabel.material as THREE.MeshBasicMaterial).opacity = smoothstep(0.05, 0.13, l)
       }
       if (soundLabel) {
-        const x = SITE.x - 7.4
-        const z = SITE.z - 0.5
-        soundLabel.position.set(x, Math.min(0, height(x, z)) * lift + 0.05, z)
-        soundLabel.rotation.set(-Math.PI / 2, 0, yaw + 0.25)
-        soundLabel.scale.setScalar(Math.min(ls, 1.3))
+        // water lettering: laid on the (nearly level) sea, clear of the floor across its whole
+        // footprint; nudged off the copy (below it on wide screens, above it on tall ones), then
+        // slid along its baseline to stay inside the frame
+        const sc = Math.min(ls, 1.3)
+        const a = yaw + 0.25
+        lbl.ex = Math.cos(a)
+        lbl.ez = -Math.sin(a)
+        lbl.ux = -Math.sin(a)
+        lbl.uz = -Math.cos(a)
+        lbl.half = soundW * sc * 0.5
+        lbl.hh = 0.95 * sc * 0.5
+        const gut = clamp(0.034 * W, 16, 48) + 10
+        const lim = 1 - (2 * gut) / W
+        const cam = scratch.position
+        const anchor = tall ? SOUND_TALL : SOUND_WIDE
+        let x = SITE.x + anchor.x
+        let z = SITE.z + anchor.y
+        let y = groundTop(x, z, soundW * sc, 0.95 * sc, a) * lift + 0.04
+        if (layDirty) measureLayout()
+        rectW[0] = inA
+        rectW[1] = inA * smoothstep(T.breathe, T.breathe + 0.03, l)
+        rectW[2] = inB
+        const M = 14
+        for (let k = 0; k < 3; k++) {
+          const R = rects[k]
+          if (rectW[k] < 0.001) continue
+          labelBox(cam, x, y, z, W, H)
+          // how far the label reaches into the box across the push (eased, so the nudge never jumps)
+          const ox = Math.min(lb.x1 - (R.x0 - M), R.x1 + M - lb.x0)
+          const oy = tall ? R.y1 + M - lb.y0 : lb.y1 - (R.y0 - M)
+          const push = tall ? R.y0 - M - lb.y1 : R.y1 + M - lb.y0
+          if (ox <= 0 || oy <= 0 || (tall ? push >= 0 : push <= 0)) continue
+          // px down the screen per world unit along the ground's screen-down axis
+          project(cam, x, y, z)
+          const y0 = _s.y
+          project(cam, x + dx, y, z + dz)
+          const jy = ((y0 - _s.y) * H) / 2
+          if (jy < 1e-3) continue
+          const d = (push * rectW[k] * smoothstep(0, 48, ox) * smoothstep(0, 32, oy)) / jy
+          x += dx * d
+          z += dz * d
+          y = groundTop(x, z, soundW * sc, 0.95 * sc, a) * lift + 0.04
+        }
+        for (let it = 0; it < 3; it++) {
+          project(cam, x - lbl.ex * lbl.half, y, z - lbl.ez * lbl.half)
+          const xl = _s.x
+          project(cam, x + lbl.ex * lbl.half, y, z + lbl.ez * lbl.half)
+          const xr = _s.x
+          const shift = xl < -lim ? -lim - xl : xr > lim ? lim - xr : 0
+          if (shift === 0) break
+          project(cam, x, y, z)
+          const c0 = _s.x
+          project(cam, x + lbl.ex, y, z + lbl.ez)
+          const j = _s.x - c0
+          if (Math.abs(j) < 1e-4) break
+          x += (lbl.ex * shift) / j
+          z += (lbl.ez * shift) / j
+          y = groundTop(x, z, soundW * sc, 0.95 * sc, a) * lift + 0.04
+        }
+        soundLabel.position.set(x, y, z)
+        soundLabel.rotation.set(-Math.PI / 2, 0, a)
+        soundLabel.scale.setScalar(sc)
+        // south of the headland the storm passes right over the name: it prints back in as the weather clears
+        const so = tall ? smoothstep(0.34, 0.44, l) : 1
+        ;(soundLabel.material as THREE.MeshBasicMaterial).opacity = so
+        soundLabel.visible = so > 0.01
+        // the isobars break around the name, like any lettering on the chart
+        if (wx) {
+          const nr = 0.4 * sc
+          const nh = Math.max(0, lbl.half - nr * 0.6)
+          wx.uName.value.set(x - lbl.ex * nh, z - lbl.ez * nh, x + lbl.ex * nh, z + lbl.ez * nh)
+          wx.uNameK.value.set(nr, so)
+        }
       }
 
       // ---------------- DOM
-      const inA = smoothstep(0.055, 0.075, l) * (1 - smoothstep(T.handoff - 0.02, T.handoff - 0.002, l))
       reveal(copyA, inA)
       reveal(eyebrow, 1, 0)
-      setRise(line1, l > 0.058 && l < T.handoff - 0.01)
-      setRise(line2, l > T.breathe && l < T.handoff - 0.01)
+      setRise(line1, l > 0.058 && l < T.handoff - 0.014)
+      setRise(line2, l > T.breathe && l < T.handoff - 0.014)
       reveal(panelA, smoothstep(T.breathe, T.breathe + 0.03, l), 0)
-      const inB = smoothstep(T.handoff - 0.004, T.handoff + 0.016, l) * (1 - smoothstep(T.out, T.out + 0.02, l))
       reveal(copyB, inB)
-      setRise(stat, l > T.handoff - 0.004 && l < T.out + 0.01)
-      reveal(panelB, smoothstep(T.handoff + 0.02, T.handoff + 0.05, l), 0)
+      setRise(stat, l > T.handoff - 0.01 && l < T.out + 0.01)
+      reveal(panelB, smoothstep(T.handoff - 0.004, T.handoff + 0.02, l), 0)
       reveal(legend, smoothstep(0.06, 0.1, l) * (1 - smoothstep(T.out, T.out + 0.02, l)), 0)
     },
 

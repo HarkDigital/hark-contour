@@ -79,8 +79,9 @@ export interface Land {
   crestB: [number, number][]
 }
 
-export function buildLand(): Land {
-  const mf = markField()
+/** `res`: the mark field's grid (phones 384, else 640; only the first markField() call sets it) */
+export function buildLand(res = 640): Land {
+  const mf = markField({ res })
   const n1 = simplex2(11)
   const n2 = simplex2(29)
   const n3 = simplex2(47)
