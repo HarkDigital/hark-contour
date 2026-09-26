@@ -1,0 +1,289 @@
+/* ------------------------------------------------------------------
+   Soundings (voices) — the intro headline on the open water, and the
+   legend box that carries each client's quote. The station lettering,
+   rings and soundings live on the chart (WebGL).
+   Every selector is scoped under .stage-voices.
+   ------------------------------------------------------------------ */
+
+.stage-voices .vc-intro {
+  position: absolute;
+  left: var(--gutter);
+  top: var(--safe-top);
+  width: min(620px, calc(100vw - 2 * var(--gutter)));
+  display: grid;
+  justify-items: start;
+  gap: clamp(12px, 2vh, 20px);
+}
+.stage-voices .vc-eyebrow,
+.stage-voices .vc-note {
+  opacity: 0;
+  transform: translate3d(0, 6px, 0);
+  transition:
+    opacity 0.3s ease,
+    transform 0.3s ease;
+}
+.stage-voices .vc-intro.is-on .vc-eyebrow,
+.stage-voices .vc-intro.is-on .vc-note {
+  opacity: 1;
+  transform: none;
+  transition:
+    opacity 0.7s ease 0.05s,
+    transform 0.9s cubic-bezier(0.16, 1, 0.3, 1) 0.05s;
+}
+.stage-voices .vc-intro.is-on .vc-note {
+  transition-delay: 0.5s;
+}
+.stage-voices .vc-title {
+  font-size: clamp(2.5rem, 5.4vw, 5.6rem);
+  line-height: 0.96;
+}
+/* chart marginalia under the title: dark enough for the water behind it */
+.stage-voices .vc-note {
+  margin: 4px 0 0;
+  color: var(--fg-muted);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+/* ---------------- the legend box ---------------- */
+
+.stage-voices .vc-panel {
+  position: absolute;
+  left: var(--gutter);
+  bottom: var(--safe-bottom);
+  width: min(468px, 36vw);
+  margin: 0;
+  padding: 20px 26px 22px;
+  display: grid;
+  gap: 18px;
+  opacity: 0;
+  visibility: hidden;
+  transform: translate3d(0, 12px, 0);
+  transition:
+    opacity 0.4s ease,
+    transform 0.5s cubic-bezier(0.16, 1, 0.3, 1),
+    visibility 0s linear 0.4s;
+}
+.stage-voices .vc-panel.is-on {
+  opacity: 1;
+  visibility: visible;
+  transform: none;
+  transition:
+    opacity 0.7s ease,
+    transform 1s cubic-bezier(0.16, 1, 0.3, 1),
+    visibility 0s linear 0s;
+}
+
+.stage-voices .vc-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  padding-bottom: 14px;
+  border-bottom: 1px solid var(--line-strong);
+}
+.stage-voices .vc-count {
+  margin: 0;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+.stage-voices .vc-count b {
+  font-weight: 700;
+  color: var(--signal-deep);
+}
+
+/* 1–8: a map-key row, the current sounding filled vermilion */
+.stage-voices .vc-steps {
+  display: flex;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.stage-voices .vc-steps li {
+  display: grid;
+  place-items: center;
+  width: 19px;
+  height: 19px;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  font-weight: 500;
+  line-height: 1;
+  padding-top: 1px;
+  color: var(--fg-faint);
+  border: 1px solid var(--line);
+  border-radius: 1px;
+  transition:
+    background-color 0.4s ease,
+    color 0.4s ease,
+    border-color 0.4s ease;
+}
+.stage-voices .vc-steps li.is-past {
+  color: var(--fg);
+  border-color: var(--line-strong);
+}
+.stage-voices .vc-steps li.is-on {
+  color: var(--paper);
+  background: var(--signal-deep);
+  border-color: var(--signal-deep);
+}
+
+/* the cards stack in one place; the stack's height glides to the current one */
+.stage-voices .vc-stack {
+  position: relative;
+  height: 0;
+  transition: height 0.6s cubic-bezier(0.16, 1, 0.3, 1);
+}
+.stage-voices .vc-card {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 0;
+  visibility: hidden;
+  opacity: 0;
+  transition:
+    opacity 0.25s ease,
+    visibility 0s linear 0.25s;
+}
+.stage-voices .vc-card.is-on {
+  visibility: visible;
+  opacity: 1;
+  transition:
+    opacity 0.2s ease,
+    visibility 0s linear 0s;
+}
+
+.stage-voices .vc-quote {
+  margin: 0;
+  font-size: clamp(1.2rem, 1.72vw, 1.8rem);
+  line-height: 1.26;
+  letter-spacing: -0.018em;
+  /* hang the opening mark in the margin */
+  text-indent: -0.4em;
+}
+.stage-voices .vc-card--long .vc-quote {
+  font-size: clamp(1.1rem, 1.5vw, 1.6rem);
+}
+.stage-voices .vc-quote .rise-w,
+.stage-voices .vc-quote .rise-w > span {
+  text-indent: 0;
+}
+/* the incoming quote is lettered in once the outgoing one has cleared; ≈1.1 s for the longest */
+.stage-voices .vc-quote.rise.is-in .rise-w > span {
+  transition-delay: calc(0.18s + min(var(--i, 0), 34) * 16ms);
+}
+
+.stage-voices .vc-who {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 2px 12px;
+  margin: 16px 0 0;
+}
+.stage-voices .vc-who::before {
+  content: '';
+  align-self: center;
+  width: 22px;
+  height: 1.5px;
+  background: var(--signal);
+}
+.stage-voices .vc-name {
+  color: var(--fg);
+}
+/* the company, lettered like a water name */
+.stage-voices .vc-co {
+  font-family: var(--font-display);
+  font-style: italic;
+  font-size: 17px;
+  line-height: 1.3;
+  color: var(--water);
+}
+
+/* ---------------- portrait: the chart above, the legend below ---------------- */
+
+@media (max-aspect-ratio: 1/1) {
+  /* the chart (rose, the NW point) above; the headline below, on open water */
+  .stage-voices .vc-intro {
+    top: auto;
+    bottom: var(--safe-bottom);
+  }
+  .stage-voices .vc-title {
+    font-size: clamp(2.3rem, 10.5vw, 4.4rem);
+  }
+  .stage-voices .vc-panel {
+    left: var(--gutter);
+    right: var(--gutter);
+    width: auto;
+    max-width: 640px;
+    padding: 16px 18px 18px;
+    gap: 13px;
+  }
+  .stage-voices .vc-meta {
+    padding-bottom: 11px;
+  }
+  .stage-voices .vc-quote {
+    font-size: clamp(1.06rem, 4.5vw, 1.55rem);
+    line-height: 1.27;
+  }
+  .stage-voices .vc-card--long .vc-quote {
+    font-size: clamp(1rem, 4.2vw, 1.42rem);
+  }
+  .stage-voices .vc-who {
+    margin-top: 12px;
+  }
+  .stage-voices .vc-co {
+    font-size: 16px;
+  }
+}
+
+/* narrow phones: a smaller key row so the meta line never wraps */
+@media (max-width: 400px) {
+  .stage-voices .vc-steps {
+    gap: 3px;
+  }
+  .stage-voices .vc-steps li {
+    width: 17px;
+    height: 17px;
+    font-size: 10px;
+  }
+  .stage-voices .vc-count {
+    font-size: 11px;
+  }
+}
+
+/* short landscape phones: thin chrome bands, a compact legend */
+@media (orientation: landscape) and (max-height: 500px) {
+  .stage-voices .vc-title {
+    font-size: clamp(1.8rem, 5vw, 2.6rem);
+  }
+  .stage-voices .vc-intro {
+    gap: 8px;
+  }
+  .stage-voices .vc-note {
+    display: none;
+  }
+  .stage-voices .vc-panel {
+    width: min(410px, 46vw);
+    padding: 11px 15px 13px;
+    gap: 9px;
+  }
+  .stage-voices .vc-meta {
+    padding-bottom: 8px;
+  }
+  .stage-voices .vc-steps li {
+    width: 16px;
+    height: 16px;
+    font-size: 9.5px;
+  }
+  .stage-voices .vc-quote,
+  .stage-voices .vc-card--long .vc-quote {
+    font-size: clamp(0.86rem, 2vw, 1rem);
+    line-height: 1.28;
+  }
+  .stage-voices .vc-who {
+    margin-top: 7px;
+  }
+  .stage-voices .vc-co {
+    font-size: 14px;
+  }
+}

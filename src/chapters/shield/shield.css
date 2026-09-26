@@ -1,0 +1,222 @@
+/* Pressure — "Hacked? Breathe." A weather chart over the headland. Every selector under .stage-shield. */
+
+.stage-shield .sh-a,
+.stage-shield .sh-b {
+  position: absolute;
+  left: var(--gutter);
+  top: var(--safe-top);
+  width: max-content;
+  max-width: min(600px, 44vw);
+  display: grid;
+  justify-items: start;
+  gap: clamp(14px, 2.4vh, 24px);
+}
+
+/* the eyebrow is small vermilion text over a busy chart: letter it on a paper label */
+.stage-shield .sh-eyebrow {
+  padding: 7px 11px 6px 10px;
+  background: var(--panel);
+  box-shadow: inset 0 0 0 1px var(--line-strong);
+  border-radius: 1px;
+  max-width: 100%;
+}
+
+.stage-shield .sh-title {
+  font-size: clamp(3rem, 7.4vw, 7.4rem);
+  line-height: 0.92;
+}
+.stage-shield .sh-line {
+  display: block;
+}
+
+.stage-shield .sh-panel {
+  max-width: min(440px, 38vw);
+  padding: 18px 22px 19px;
+}
+.stage-shield .sh-panel .hud-body {
+  max-width: 40ch;
+  color: rgba(43, 37, 33, 0.88);
+}
+
+/* ---------- 24/7, its label, the emergency CTA ---------- */
+
+.stage-shield .sh-stat {
+  font-size: clamp(4rem, 10.5vw, 10.5rem);
+  letter-spacing: -0.045em;
+  line-height: 0.9;
+  font-variant-numeric: lining-nums;
+}
+.stage-shield .sh-panel-b {
+  display: grid;
+  justify-items: start;
+  gap: 16px;
+  max-width: min(400px, 36vw);
+}
+
+/* ---------- the chart's legend box (decorative) ---------- */
+
+.stage-shield .sh-legend {
+  position: absolute;
+  right: var(--gutter);
+  bottom: var(--safe-bottom);
+  width: 232px;
+  padding: 14px 16px 13px;
+  display: grid;
+  gap: 8px;
+}
+.stage-shield .sh-legend-title {
+  margin: 0 0 2px;
+  color: var(--fg);
+  font-size: 10.5px;
+  letter-spacing: 0.14em;
+}
+.stage-shield .sh-keys {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: 5px;
+}
+.stage-shield .sh-key {
+  display: grid;
+  grid-template-columns: 44px 1fr;
+  align-items: center;
+  gap: 10px;
+  font-family: var(--font-sans);
+  font-size: 12px;
+  line-height: 1.3;
+  color: rgba(43, 37, 33, 0.86);
+}
+.stage-shield .sh-key-sym svg {
+  display: block;
+  width: 44px;
+  height: 14px;
+  overflow: visible;
+}
+.stage-shield .sh-readout,
+.stage-shield .sh-coord {
+  margin: 0;
+  color: rgba(43, 37, 33, 0.78);
+}
+.stage-shield .sh-readout {
+  padding-top: 8px;
+  border-top: 1px solid var(--line);
+  text-transform: uppercase;
+}
+.stage-shield .sh-read-p {
+  font-weight: 600;
+  color: var(--fg);
+  font-variant-numeric: tabular-nums;
+}
+
+/* the legend only where there is room for it beside the chart */
+@media (max-width: 1100px), (max-height: 740px) {
+  .stage-shield .sh-legend {
+    display: none;
+  }
+}
+
+/* ---------- portrait: the chart above, copy below ---------- */
+
+@media (orientation: portrait) {
+  .stage-shield .sh-a,
+  .stage-shield .sh-b {
+    top: auto;
+    bottom: var(--safe-bottom);
+    right: var(--gutter);
+    width: auto;
+    max-width: 640px;
+  }
+  .stage-shield .sh-title {
+    font-size: clamp(2.9rem, 12vw, 6rem);
+  }
+  .stage-shield .sh-stat {
+    font-size: clamp(4.2rem, 22vw, 9rem);
+  }
+  .stage-shield .sh-panel,
+  .stage-shield .sh-panel-b {
+    max-width: none;
+  }
+  .stage-shield .sh-panel .hud-body {
+    max-width: 52ch;
+  }
+}
+
+@media (orientation: portrait) and (max-width: 520px) {
+  .stage-shield .sh-a,
+  .stage-shield .sh-b {
+    gap: 12px;
+  }
+  .stage-shield .sh-eyebrow {
+    font-size: 10px;
+    letter-spacing: 0.12em;
+    gap: 8px;
+    padding: 6px 9px 5px 8px;
+  }
+  .stage-shield .sh-panel {
+    padding: 13px 15px 14px;
+  }
+  .stage-shield .sh-panel .hud-body {
+    font-size: 14.5px;
+    line-height: 1.5;
+  }
+  .stage-shield .sh-panel-b {
+    gap: 12px;
+  }
+}
+
+@media (orientation: portrait) and (max-width: 520px) and (max-height: 700px) {
+  .stage-shield .sh-title {
+    font-size: 2.5rem;
+  }
+  .stage-shield .sh-a,
+  .stage-shield .sh-b {
+    gap: 9px;
+  }
+  .stage-shield .sh-panel .hud-body {
+    font-size: 13.5px;
+    line-height: 1.45;
+  }
+  .stage-shield .sh-stat {
+    font-size: 4rem;
+  }
+  .stage-shield .sh-cta {
+    padding: 11px 16px 10px;
+  }
+}
+
+/* ---------- short landscape phones: thin bands, compact copy ---------- */
+
+@media (orientation: landscape) and (max-height: 500px) {
+  .stage-shield .sh-a,
+  .stage-shield .sh-b {
+    gap: 8px;
+    max-width: min(400px, 46vw);
+  }
+  .stage-shield .sh-title {
+    font-size: clamp(1.9rem, 8.5vh, 2.6rem);
+  }
+  .stage-shield .sh-stat {
+    font-size: clamp(2.6rem, 15vh, 3.6rem);
+  }
+  .stage-shield .sh-eyebrow {
+    font-size: 9.5px;
+    letter-spacing: 0.1em;
+    padding: 5px 8px 4px 7px;
+  }
+  .stage-shield .sh-panel {
+    padding: 9px 12px;
+    max-width: min(400px, 46vw);
+  }
+  .stage-shield .sh-panel .hud-body {
+    font-size: 12.5px;
+    line-height: 1.4;
+  }
+  .stage-shield .sh-panel-b {
+    gap: 8px;
+  }
+  .stage-shield .sh-cta {
+    padding: 9px 14px 8px;
+    font-size: 11.5px;
+  }
+}
